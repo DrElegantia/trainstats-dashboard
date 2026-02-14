@@ -3,4 +3,5 @@ mese,categoria,bucket_ritardo_arrivo,count,minuti_ritardo,minuti_anticipo
 2025-12,REG,"(-10,-5]",1,0,6
 2026-01,FR,"(15,30]",1,16,0
 2026-01,REG,"(60,120]",1,65,0
+2026-02,REG,"(0,1]",1,1,0
 2026-02,REG,"(15,30]",2,57,0
