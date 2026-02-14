@@ -6,7 +6,7 @@ import shutil
 from datetime import datetime
 from typing import Any, Dict
 
-from scripts.utils import ensure_dir, load_yaml
+from .utils import ensure_dir, load_yaml
 
 
 GOLD_FILES = [
