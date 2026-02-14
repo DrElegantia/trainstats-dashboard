@@ -10,7 +10,6 @@ on:
         description: "Start date YYYY-MM-DD"
         required: false
         type: string
-
       end_date:
         description: "End date YYYY-MM-DD"
         required: false
@@ -54,7 +53,13 @@ jobs:
           START_DATE: ${{ inputs.start_date }}
           END_DATE: ${{ inputs.end_date }}
         run: |
-          if [ -n "$START_DATE" ]; then
+          set -euo pipefail
+
+          if [ -n "${START_DATE:-}" ] && [ -z "${END_DATE:-}" ]; then
+            END_DATE="$START_DATE"
+          fi
+
+          if [ -n "${START_DATE:-}" ]; then
             echo "Running backfill from $START_DATE to $END_DATE"
             python -m scripts.run_pipeline --start "$START_DATE" --end "$END_DATE"
           else
@@ -62,26 +67,75 @@ jobs:
             python -m scripts.run_pipeline
           fi
 
+      - name: Sanity check bronze rows
+        env:
+          START_DATE: ${{ inputs.start_date }}
+          END_DATE: ${{ inputs.end_date }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import gzip, os
+          from datetime import date, timedelta
+
+          start = os.environ.get("START_DATE") or ""
+          end = os.environ.get("END_DATE") or ""
+
+          if not start:
+            print({"sanity_check": "skipped", "reason": "no START_DATE provided"})
+            raise SystemExit(0)
+
+          if not end:
+            end = start
+
+          d0 = date.fromisoformat(start)
+          d1 = date.fromisoformat(end)
+          if d1 < d0:
+            raise SystemExit("END_DATE must be >= START_DATE")
+
+          cur = d0
+          total_rows = 0
+
+          while cur <= d1:
+            y = f"{cur.year:04d}"
+            m = f"{cur.month:02d}"
+            dd = f"{cur.day:02d}"
+            p = f"data/bronze/{y}/{m}/{y}{m}{dd}.csv.gz"
+
+            if not os.path.exists(p):
+              print({"date": cur.isoformat(), "bronze": "missing", "path": p})
+            else:
+              with gzip.open(p, "rt", encoding="utf-8", errors="replace") as f:
+                n = sum(1 for _ in f) - 1
+              n = max(n, 0)
+              total_rows += n
+              print({"date": cur.isoformat(), "bronze_rows": n, "path": p})
+
+            cur += timedelta(days=1)
+
+          print({"bronze_total_rows": total_rows})
+          PY
+
       - name: Update stations unknown list
         run: |
           python -m scripts.update_stations || true
 
       - name: Build docs/data for GitHub Pages
         run: |
+          set -euo pipefail
+
           mkdir -p docs/data
           touch docs/.nojekyll
 
           rm -f docs/data/*.csv || true
-          cp -v data/gold/*.csv docs/data/ || true
+
+          cp -v data/gold/*.csv docs/data/
 
           if [ -f site/data/stations_dim.csv ]; then
             cp -v site/data/stations_dim.csv docs/data/stations_dim.csv
-          fi
-
-          if [ -f docs/data/stations_dim.csv ]; then
-            echo "stations_dim.csv ok"
+          elif [ -f docs/data/stations_dim.csv ]; then
+            echo "stations_dim.csv already present"
           else
-            echo "stations_dim.csv missing in docs/data (build_station_dim must have run)"
+            echo "stations_dim.csv missing (build_station_dim must have run)"
           fi
 
           if [ -f site/data/manifest.json ]; then
@@ -90,18 +144,17 @@ jobs:
             cp -v data/gold/manifest.json docs/data/manifest.json
           fi
 
-          echo "Docs tree:"
-          ls -la docs
           echo "Docs data tree:"
           ls -la docs/data
 
       - name: Commit generated data and docs
         run: |
+          set -euo pipefail
+
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
 
-          git add data/ || true
-          git add docs/ || true
+          git add data/ docs/ || true
 
           if git diff --cached --quiet; then
             echo "No changes to commit"
