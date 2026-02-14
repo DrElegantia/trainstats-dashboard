@@ -1,2 +1,2 @@
 mese,categoria,cod_partenza,cod_arrivo,corse_osservate,effettuate,cancellate,soppresse,parzialmente_cancellate,info_mancante,in_orario,in_ritardo,in_anticipo,oltre_5,oltre_10,oltre_15,oltre_30,oltre_60,minuti_ritardo_tot,minuti_anticipo_tot,minuti_netti_tot,ritardo_medio,ritardo_mediano,p90,p95,nome_partenza,nome_arrivo
-2026-01,FR,S08409,S09218,1,1,0,0,0,0,0,1,0,1,1,1,0,0,16,0,16,16.0,16.0,16.0,16.0,ROMA TERMINI,NAPOLI CENTRALE
+2026-01,FR,S08409,S09218,2,2,0,0,0,0,0,2,0,2,2,2,0,0,32,0,32,16.0,16.0,16.0,16.0,ROMA TERMINI,NAPOLI CENTRALE
