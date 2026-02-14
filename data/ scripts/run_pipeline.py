@@ -45,4 +45,3 @@ if __name__ == "__main__":
     ap.add_argument("--end", required=False, help="YYYY-MM-DD")
     args = ap.parse_args()
     main(args.start, args.end)
-
