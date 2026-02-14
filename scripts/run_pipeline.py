@@ -21,7 +21,11 @@ def run(start: date, end: date) -> None:
 
     call([sys.executable, "-m", "scripts.ingest", "--start", s, "--end", e])
     call([sys.executable, "-m", "scripts.transform_silver", "--start", s, "--end", e])
+
     call([sys.executable, "-m", "scripts.build_gold"])
+
+    call([sys.executable, "-m", "scripts.build_station_dim"])
+
     call([sys.executable, "-m", "scripts.build_site"])
 
 
