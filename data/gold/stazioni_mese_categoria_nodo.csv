@@ -1,3 +1,7 @@
 mese,categoria,cod_stazione,corse_osservate,effettuate,cancellate,soppresse,parzialmente_cancellate,info_mancante,in_orario,in_ritardo,in_anticipo,oltre_5,oltre_10,oltre_15,oltre_30,oltre_60,minuti_ritardo_tot,minuti_anticipo_tot,minuti_netti_tot,ruolo,nome_stazione,ritardo_medio,ritardo_mediano,p90,p95
+2025-12,IC,S12002,1,1,0,0,0,0,0,1,0,1,1,1,1,1,96,0,96,nodo,PALERMO CENTRALE,96.0,96.0,96.0,96.0
+2025-12,IC,S12301,1,1,0,0,0,0,0,1,0,1,1,1,1,1,96,0,96,nodo,MESSINA CENTRALE,96.0,96.0,96.0,96.0
+2025-12,REG,S08409,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,6,-6,nodo,ROMA TERMINI,-6.0,-6.0,-6.0,-6.0
+2025-12,REG,S08411,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,6,-6,nodo,FIUMICINO AEROPORTO,-6.0,-6.0,-6.0,-6.0
 2026-01,FR,S08409,2,2,0,0,0,0,0,2,0,2,2,2,0,0,32,0,32,nodo,ROMA TERMINI,16.0,16.0,16.0,16.0
 2026-01,FR,S09218,2,2,0,0,0,0,0,2,0,2,2,2,0,0,32,0,32,nodo,NAPOLI CENTRALE,16.0,16.0,16.0,16.0

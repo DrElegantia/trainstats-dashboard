@@ -1,2 +1,4 @@
 mese,categoria,cod_partenza,cod_arrivo,corse_osservate,effettuate,cancellate,soppresse,parzialmente_cancellate,info_mancante,in_orario,in_ritardo,in_anticipo,oltre_5,oltre_10,oltre_15,oltre_30,oltre_60,minuti_ritardo_tot,minuti_anticipo_tot,minuti_netti_tot,ritardo_medio,ritardo_mediano,p90,p95,nome_partenza,nome_arrivo
+2025-12,IC,S12301,S12002,1,1,0,0,0,0,0,1,0,1,1,1,1,1,96,0,96,96.0,96.0,96.0,96.0,MESSINA CENTRALE,PALERMO CENTRALE
+2025-12,REG,S08411,S08409,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,6,-6,-6.0,-6.0,-6.0,-6.0,FIUMICINO AEROPORTO,ROMA TERMINI
 2026-01,FR,S08409,S09218,2,2,0,0,0,0,0,2,0,2,2,2,0,0,32,0,32,16.0,16.0,16.0,16.0,ROMA TERMINI,NAPOLI CENTRALE
