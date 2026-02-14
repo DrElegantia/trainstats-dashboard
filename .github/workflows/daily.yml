@@ -77,6 +77,12 @@ jobs:
           echo
           echo "Python import check:"
           python -c "import scripts.utils as u; print('utils file:', u.__file__); print('has format_di_df:', hasattr(u, 'format_di_df'))"
+      - name: Debug scripts content
+        run: |
+          echo "show ingest import block"
+          sed -n '1,60p' scripts/ingest.py
+          echo "check format_di_df in utils"
+          grep -n "def format_di_df" -n scripts/utils.py || true
 
       - name: Run pipeline
         env:
