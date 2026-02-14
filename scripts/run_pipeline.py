@@ -19,10 +19,10 @@ def run(start: date, end: date) -> None:
     s = start.isoformat()
     e = end.isoformat()
 
-    call([sys.executable, "scripts/ingest.py", "--start", s, "--end", e])
-    call([sys.executable, "scripts/transform_silver.py", "--start", s, "--end", e])
-    call([sys.executable, "scripts/build_gold.py"])
-    call([sys.executable, "scripts/build_site.py"])
+    call([sys.executable, "-m", "scripts.ingest", "--start", s, "--end", e])
+    call([sys.executable, "-m", "scripts.transform_silver", "--start", s, "--end", e])
+    call([sys.executable, "-m", "scripts.build_gold"])
+    call([sys.executable, "-m", "scripts.build_site"])
 
 
 def main(start: Optional[str], end: Optional[str]) -> None:
