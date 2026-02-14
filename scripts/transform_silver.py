@@ -10,6 +10,7 @@ import pandas as pd
 from .utils import (
     StatusEngine,
     compute_unique_key,
+    date_range_inclusive,
     ensure_dir,
     load_json,
     load_yaml,
@@ -20,8 +21,6 @@ from .utils import (
 
 
 def list_bronze_files_for_range(d0: date, d1: date) -> List[Tuple[date, str, str]]:
-    from scripts.utils import date_range_inclusive
-
     out: List[Tuple[date, str, str]] = []
     for d in date_range_inclusive(d0, d1):
         y = f"{d.year:04d}"
@@ -44,8 +43,7 @@ def silver_path_for_month(d: date) -> str:
 
 
 def read_bronze(csv_gz: str, meta_path: str) -> pd.DataFrame:
-    with open(meta_path, "r", encoding="utf-8") as f:
-        meta = pd.read_json(f, typ="series")
+    meta = pd.read_json(meta_path, typ="series")
     extracted_at = str(meta.get("extracted_at_utc", ""))
 
     with gzip.open(csv_gz, "rb") as f:
@@ -57,6 +55,30 @@ def read_bronze(csv_gz: str, meta_path: str) -> pd.DataFrame:
     return df
 
 
+def canonical_rename(df: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {
+        "Categoria": "categoria",
+        "Numero treno": "numero_treno",
+        "Codice stazione partenza": "cod_partenza",
+        "Nome stazione partenza": "nome_partenza",
+        "Ora partenza programmata": "dt_partenza_prog_raw",
+        "Ritardo partenza": "ritardo_partenza_raw",
+        "Codice stazione arrivo": "cod_arrivo",
+        "Nome stazione arrivo": "nome_arrivo",
+        "Ora arrivo programmata": "dt_arrivo_prog_raw",
+        "Ritardo arrivo": "ritardo_arrivo_raw",
+        "Cambi numerazione": "cambi_numerazione",
+        "Provvedimenti": "provvedimenti",
+        "Variazioni": "variazioni",
+        "Stazione estera partenza": "stazione_estera_partenza",
+        "Orario estero partenza": "orario_estero_partenza",
+        "Stazione estera arrivo": "stazione_estera_arrivo",
+        "Orario estero arrivo": "orario_estero_arrivo",
+    }
+    present = {k: v for k, v in rename_map.items() if k in df.columns}
+    return df.rename(columns=present)
+
+
 def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     se = StatusEngine.from_config(cfg)
 
@@ -64,16 +86,21 @@ def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
         if df[c].dtype == object:
             df[c] = df[c].astype(str)
 
-    df["stazione_partenza_nome_norm"] = df["Nome stazione partenza"].map(normalize_station_name)
-    df["stazione_arrivo_nome_norm"] = df["Nome stazione arrivo"].map(normalize_station_name)
+    df = canonical_rename(df)
 
-    df["ritardo_partenza_min"] = df["Ritardo partenza"].map(safe_int)
-    df["ritardo_arrivo_min"] = df["Ritardo arrivo"].map(safe_int)
+    required = ["categoria", "numero_treno", "cod_partenza", "cod_arrivo", "dt_partenza_prog_raw", "dt_arrivo_prog_raw"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise RuntimeError(f"silver missing required columns after rename: {missing}. available={list(df.columns)}")
 
-    dt_p = df["Ora partenza programmata"].map(parse_dt_it)
-    dt_a = df["Ora arrivo programmata"].map(parse_dt_it)
-    df["partenza_prog_dt"] = dt_p
-    df["arrivo_prog_dt"] = dt_a
+    df["nome_partenza"] = df.get("nome_partenza", "").map(normalize_station_name)
+    df["nome_arrivo"] = df.get("nome_arrivo", "").map(normalize_station_name)
+
+    df["ritardo_partenza_min"] = df.get("ritardo_partenza_raw", "").map(safe_int)
+    df["ritardo_arrivo_min"] = df.get("ritardo_arrivo_raw", "").map(safe_int)
+
+    df["dt_partenza_prog"] = df["dt_partenza_prog_raw"].map(parse_dt_it)
+    df["dt_arrivo_prog"] = df["dt_arrivo_prog_raw"].map(parse_dt_it)
 
     df["data_riferimento"] = df["_reference_date"]
 
@@ -82,7 +109,7 @@ def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     df["stato_corsa"] = df.apply(se.classify, axis=1)
 
     df["missing_key"] = df["unique_key"].isna() | (df["unique_key"].astype(str).str.len() == 0)
-    df["missing_datetime"] = df["partenza_prog_dt"].isna() | df["arrivo_prog_dt"].isna()
+    df["missing_datetime"] = df["dt_partenza_prog"].isna() | df["dt_arrivo_prog"].isna()
 
     df["info_mancante"] = df["missing_key"] | df["missing_datetime"]
 
@@ -156,4 +183,3 @@ if __name__ == "__main__":
     ap.add_argument("--end", required=False, help="YYYY-MM-DD")
     args = ap.parse_args()
     main(args.start, args.end)
-
