@@ -1,4 +1,4 @@
 mese,corse_osservate,effettuate,cancellate,soppresse,parzialmente_cancellate,info_mancante,in_orario,in_ritardo,in_anticipo,oltre_5,oltre_10,oltre_15,oltre_30,oltre_60,minuti_ritardo_tot,minuti_anticipo_tot,minuti_netti_tot,ritardo_medio,ritardo_mediano,p90,p95
 2025-12,2,2,0,0,0,0,0,1,1,1,1,1,1,1,96,6,90,45.0,45.0,85.8,90.9
-2026-01,2,2,0,0,0,0,0,2,0,2,2,2,1,1,81,0,81,40.5,40.5,60.1,62.55
+2026-01,18646,18646,0,0,0,0,8073,3773,6800,3773,1595,945,325,70,63966,18007,45959,2.4648181915692375,1.0,8.0,15.0
 2026-02,1,1,0,0,0,0,1,0,0,0,0,0,0,0,1,0,1,1.0,1.0,1.0,1.0
