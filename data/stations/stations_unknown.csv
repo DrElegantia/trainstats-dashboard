@@ -1,2 +1,6 @@
-codice,nome_norm,first_seen_date,last_seen_date,count_seen
-
+cod_stazione,nome_stazione
+S12002,PALERMO CENTRALE
+S12301,MESSINA CENTRALE
+S08411,FIUMICINO AEROPORTO
+S01307,COMO S.GIOVANNI
+S01645,MILANO PORTA GARIBALDI
