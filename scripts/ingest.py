@@ -4,7 +4,7 @@ import os
 from datetime import date, datetime
 from typing import Any, Dict, Optional
 
-from scripts.utils import (
+from .utils import (
     ensure_dir,
     format_di_df,
     http_get_with_retry,
