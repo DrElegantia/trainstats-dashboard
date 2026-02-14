@@ -191,3 +191,10 @@ def bucketize_delay(minutes: Optional[int], edges: List[int], labels: List[str])
         return "missing"
     for i in range(len(edges) - 1):
         lo = edges[i]
+
+def parse_di_df(s: str) -> date:
+    return datetime.strptime(s, "%d_%m_%Y").date()
+
+def format_di_df(d: date) -> str:
+    return d.strftime("%d_%m_%Y")
+
