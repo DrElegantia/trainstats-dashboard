@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, List
 import duckdb
 import pandas as pd
 
-from scripts.utils import bucketize_delay, ensure_dir, load_yaml
+from .utils import bucketize_delay, ensure_dir, load_yaml
 
 
 def list_silver_months() -> List[str]:
