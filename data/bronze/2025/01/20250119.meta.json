@@ -1,0 +1,32 @@
+{
+  "reference_date": "2025-01-19",
+  "range_start": "2025-01-19",
+  "range_end": "2025-01-19",
+  "extracted_at_utc": "2026-02-14T15:28:07Z",
+  "source_url": "https://trainstats.altervista.org/exportcsvint.php?type=treni&action=show&di=19_01_2025&df=19_01_2025&fields=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20",
+  "bytes": 429,
+  "header": [
+    "Categoria",
+    "Numero treno",
+    "Codice stazione partenza",
+    "Nome stazione partenza",
+    "Ora partenza programmata",
+    "Ritardo partenza",
+    "Codice stazione arrivo",
+    "Nome stazione arrivo",
+    "Ora arrivo programmata",
+    "Ritardo arrivo",
+    "Codice stazione partenza 0",
+    "Nome stazione partenza 0",
+    "Codice stazione arrivo 0",
+    "Nome stazione arrivo 0",
+    "Cambi numerazione",
+    "Provvedimenti",
+    "Variazioni",
+    "Stazione estera partenza",
+    "Orario estero partenza",
+    "Stazione estera arrivo",
+    "Orario estero arrivo"
+  ],
+  "mode": "day"
+}
