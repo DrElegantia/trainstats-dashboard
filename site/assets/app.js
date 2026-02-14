@@ -30,8 +30,8 @@ function splitCSVLine(line) {
   let inQ = false;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
-    if (ch === '"' ) {
-      if (inQ && line[i+1] === '"') { cur += '"'; i++; }
+    if (ch === '"') {
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
       else inQ = !inQ;
       continue;
     }
@@ -67,6 +67,25 @@ function yearFromMonth(mese) {
 
 function monthFromDay(giorno) {
   return String(giorno).slice(0, 7);
+}
+
+function stationName(code, fallback) {
+  const c = String(code || "").trim();
+  const ref = state.stationsRef.get(c);
+  const n = ref && ref.name ? String(ref.name).trim() : "";
+  if (n) return n;
+  const fb = String(fallback || "").trim();
+  return fb || c;
+}
+
+function stationCoords(code) {
+  const c = String(code || "").trim();
+  const ref = state.stationsRef.get(c);
+  if (!ref) return null;
+  const lat = Number(ref.lat);
+  const lon = Number(ref.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return { lat, lon };
 }
 
 const state = {
@@ -112,14 +131,23 @@ async function loadAll() {
   state.stationsMonthNode = parsed["stazioni_mese_categoria_nodo.csv"] || [];
   state.odMonthCat = parsed["od_mese_categoria.csv"] || [];
 
-  const stTxt = await fetchText("../stations/stations.csv").catch(() => "");
+  const stTxt = await fetchText("data/stations_dim.csv").catch(() => "");
   const stRows = stTxt ? parseCSV(stTxt) : [];
+
+  state.stationsRef.clear();
   stRows.forEach(r => {
-    state.stationsRef.set(String(r.codice).trim(), {
-      codice: String(r.codice).trim(),
-      nome_norm: String(r.nome_norm || "").trim(),
-      lat: Number(r.lat),
-      lon: Number(r.lon)
+    const code = String(r.cod_stazione || r.codice || r.cod || "").trim();
+    if (!code) return;
+
+    const name = String(r.nome_stazione || r.nome_norm || r.nome || "").trim();
+    const lat = Number(r.lat);
+    const lon = Number(r.lon);
+
+    state.stationsRef.set(code, {
+      code,
+      name,
+      lat,
+      lon
     });
   });
 
@@ -152,14 +180,14 @@ function initFilters() {
   depSel.innerHTML = "";
   depSel.appendChild(new Option("Tutte", "all"));
   deps.forEach(code => {
-    const name = state.stationsRef.get(code)?.nome_norm || code;
+    const name = stationName(code, code);
     depSel.appendChild(new Option(name + " (" + code + ")", code));
   });
 
   arrSel.innerHTML = "";
   arrSel.appendChild(new Option("Tutte", "all"));
   arrs.forEach(code => {
-    const name = state.stationsRef.get(code)?.nome_norm || code;
+    const name = stationName(code, code);
     arrSel.appendChild(new Option(name + " (" + code + ")", code));
   });
 
@@ -224,10 +252,7 @@ function renderKPI() {
   if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, "mese"));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
 
-  let extraFilter = false;
-
   if (state.filters.dep !== "all" || state.filters.arr !== "all") {
-    extraFilter = true;
     let od = state.odMonthCat;
     if (state.filters.year !== "all") od = od.filter(r => passYear(r, "mese"));
     if (state.filters.cat !== "all") od = od.filter(passCat);
@@ -355,8 +380,6 @@ function renderHist() {
 }
 
 function initTables() {
-  const minN = toNum(state.manifest.min_counts.leaderboard_min_trains);
-
   state.tables.stations = new Tabulator("#tableStations", {
     layout: "fitColumns",
     height: "360px",
@@ -467,8 +490,8 @@ function renderMap() {
     if (n < minN) return;
 
     const code = String(r.cod_stazione).trim();
-    const ref = state.stationsRef.get(code);
-    if (!ref || !Number.isFinite(ref.lat) || !Number.isFinite(ref.lon)) {
+    const coords = stationCoords(code);
+    if (!coords) {
       missingCoords++;
       return;
     }
@@ -484,7 +507,7 @@ function renderMap() {
     if (metric === "soppresse") v = toNum(r.soppresse);
 
     const radius = Math.max(4, Math.min(18, Math.sqrt(v + 1)));
-    const marker = L.circleMarker([ref.lat, ref.lon], {
+    const marker = L.circleMarker([coords.lat, coords.lon], {
       radius,
       weight: 1,
       opacity: 0.9,
@@ -493,7 +516,7 @@ function renderMap() {
 
     marker.bindTooltip(
       `<div style="font-size:12px">
-        <div><b>${ref.nome_norm || r.nome_stazione}</b> (${code})</div>
+        <div><b>${stationName(code, r.nome_stazione)}</b> (${code})</div>
         <div>Treni: ${fmtInt(n)}</div>
         <div>In ritardo: ${fmtInt(late)} (${fmtFloat(pct)}%)</div>
         <div>Minuti ritardo: ${fmtInt(toNum(r.minuti_ritardo_tot))}</div>
@@ -506,7 +529,7 @@ function renderMap() {
   });
 
   const note = missingCoords > 0
-    ? "Alcune stazioni non hanno coordinate in stations.csv e non sono disegnate sulla mappa. Vedi stations_unknown.csv per la lista."
+    ? "Alcune stazioni non hanno coordinate e non sono disegnate sulla mappa. Completa stations/stations.csv oppure guarda stations/stations_unknown.csv."
     : "Coordinate stazioni complete per il set filtrato.";
   document.getElementById("mapNote").innerText = note;
 }
@@ -523,4 +546,3 @@ loadAll().catch(err => {
   console.error(err);
   document.getElementById("metaBox").innerText = "Errore caricamento dati";
 });
-
