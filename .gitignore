@@ -4,18 +4,24 @@ __pycache__/
 .vscode/
 .DS_Store
 
-data/silver/**/*.parquet
+# silver intermedi, mai versionati
+data/silver/
+data/silver_trains/
+
+# eventuali database locali
+*.duckdb
+
+# gold parquet non necessari
 data/gold/**/*.parquet
 
-# bronze: vogliamo tracciare i raw compressi + meta
-# se vuoi ignorare i csv non compressi, lascia solo la riga .csv
+# bronze: ignoriamo solo csv non compressi
 data/bronze/**/*.csv
 
-# non ignorare questi
+# ma tracciamo sempre questi
 !data/bronze/**/*.csv.gz
 !data/bronze/**/*.json
 
-# pages: ora pubblichi da docs, quindi non serve più ignorare site/data
+# GitHub Pages pubblica da docs
 site/
 
 !.gitkeep
