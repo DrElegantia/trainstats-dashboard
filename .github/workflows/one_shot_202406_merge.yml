@@ -175,7 +175,7 @@ jobs:
           def merge_csv(path: Path, new_df: pd.DataFrame, key_cols):
               for k in key_cols:
                   if k not in new_df.columns:
-                      raise KeyError(f"merge_csv: missing key col {k} for {path.name}. have={list(new_df.columns)[:50]}")
+                      raise KeyError(f"merge_csv: missing key col {k} for {path.name}. have={list(new_df.columns)[:60]}")
               if path.exists():
                   old = pd.read_csv(path)
                   df = pd.concat([old, new_df], ignore_index=True)
@@ -195,21 +195,11 @@ jobs:
               if not target.exists():
                   return df
               cols = pd.read_csv(target, nrows=0).columns.tolist()
+              df = df.copy()
               for c in cols:
                   if c not in df.columns:
                       df[c] = pd.NA
               return df[cols]
-
-          def harmonize_station_schema(target: Path, df: pd.DataFrame):
-              if "stazione" in df.columns and "cod_stazione" not in df.columns:
-                  df = df.rename(columns={"stazione": "cod_stazione"})
-              if target.exists():
-                  cols = pd.read_csv(target, nrows=0).columns.tolist()
-                  if "stazione" in cols and "cod_stazione" in df.columns and "stazione" not in df.columns:
-                      df["stazione"] = df["cod_stazione"]
-                  if "cod_stazione" in cols and "stazione" in df.columns and "cod_stazione" not in df.columns:
-                      df["cod_stazione"] = df["stazione"]
-              return df
 
           con = duckdb.connect()
           con.execute("PRAGMA threads=4")
@@ -281,7 +271,8 @@ jobs:
             mese,
             categoria,
             numero_treno,
-            CAST(stop.n AS VARCHAR) AS stazione,
+            CAST(stop.c AS VARCHAR) AS cod_stazione,
+            CAST(stop.n AS VARCHAR) AS nome_stazione,
             CASE
               WHEN idx = 1 THEN 'PARTENZA'
               WHEN idx = max_idx THEN 'ARRIVO'
@@ -293,7 +284,7 @@ jobs:
               ELSE TRY_CAST(stop.ra AS DOUBLE)
             END AS ra_min
           FROM s
-          WHERE stop.n IS NOT NULL
+          WHERE stop.c IS NOT NULL
           """)
 
           kpi_giorno = con.execute("""
@@ -418,7 +409,8 @@ jobs:
           SELECT
             mese,
             categoria,
-            stazione,
+            cod_stazione,
+            any_value(nome_stazione) AS nome_stazione,
             COUNT(*) AS corse_osservate,
             COUNT(ra_min) AS effettuate,
             SUM(CASE WHEN ra_min IS NULL THEN 1 ELSE 0 END) AS cancellate,
@@ -439,7 +431,8 @@ jobs:
             mese,
             categoria,
             ruolo,
-            stazione,
+            cod_stazione,
+            any_value(nome_stazione) AS nome_stazione,
             COUNT(*) AS corse_osservate,
             COUNT(ra_min) AS effettuate,
             SUM(CASE WHEN ra_min IS NULL THEN 1 ELSE 0 END) AS cancellate,
@@ -472,27 +465,15 @@ jobs:
 
           con.close()
 
-          st_nodo = harmonize_station_schema(DOCS / "stazioni_mese_categoria_nodo.csv", st_nodo)
-          st_ruolo = harmonize_station_schema(DOCS / "stazioni_mese_categoria_ruolo.csv", st_ruolo)
-
           merge_csv(DOCS / "kpi_giorno.csv", align_to_existing_schema(DOCS / "kpi_giorno.csv", kpi_giorno), ["giorno"])
           merge_csv(DOCS / "kpi_mese.csv", align_to_existing_schema(DOCS / "kpi_mese.csv", kpi_mese), ["mese"])
-          merge_csv(DOCS / "kpi_giorno_categoria.csv", align_to_existing_schema(DOCS / "kpi_giorno_categoria.csv", kpi_giorno_cat), ["giorno", "categoria"])
-          merge_csv(DOCS / "kpi_mese_categoria.csv", align_to_existing_schema(DOCS / "kpi_mese_categoria.csv", kpi_mese_cat), ["mese", "categoria"])
+          merge_csv(DOCS / "kpi_giorno_categoria.csv", align_to_existing_schema(DOCS / "kpi_giorno_categoria.csv", kpi_giorno_cat), ["giorno","categoria"])
+          merge_csv(DOCS / "kpi_mese_categoria.csv", align_to_existing_schema(DOCS / "kpi_mese_categoria.csv", kpi_mese_cat), ["mese","categoria"])
 
-          merge_csv(
-            DOCS / "stazioni_mese_categoria_nodo.csv",
-            align_to_existing_schema(DOCS / "stazioni_mese_categoria_nodo.csv", st_nodo),
-            ["mese", "categoria", "cod_stazione"]
-          )
+          merge_csv(DOCS / "stazioni_mese_categoria_nodo.csv", align_to_existing_schema(DOCS / "stazioni_mese_categoria_nodo.csv", st_nodo), ["mese","categoria","cod_stazione"])
+          merge_csv(DOCS / "stazioni_mese_categoria_ruolo.csv", align_to_existing_schema(DOCS / "stazioni_mese_categoria_ruolo.csv", st_ruolo), ["mese","categoria","ruolo","cod_stazione"])
 
-          merge_csv(
-            DOCS / "stazioni_mese_categoria_ruolo.csv",
-            align_to_existing_schema(DOCS / "stazioni_mese_categoria_ruolo.csv", st_ruolo),
-            ["mese", "categoria", "ruolo", "cod_stazione"]
-          )
-
-          merge_csv(DOCS / "od_mese_categoria.csv", align_to_existing_schema(DOCS / "od_mese_categoria.csv", od), ["mese", "categoria", "origine", "destinazione"])
+          merge_csv(DOCS / "od_mese_categoria.csv", align_to_existing_schema(DOCS / "od_mese_categoria.csv", od), ["mese","categoria","origine","destinazione"])
 
           (ROOT / "docs" / ".nojekyll").touch()
           print("updated docs/data")
