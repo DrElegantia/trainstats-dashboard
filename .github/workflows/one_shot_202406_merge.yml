@@ -1,4 +1,4 @@
-name: One shot 2024-06 (days -> trains -> gold extras -> merge)
+name: One shot 2024-06 (days -> trains -> KPI + stazioni + OD -> merge)
 
 on:
   workflow_dispatch:
@@ -155,7 +155,7 @@ jobs:
           print("written:", out_path, "rows:", len(out), "skipped_days:", skipped)
           PY
 
-      - name: Build KPI + stations + distributions + OD and merge into docs/data
+      - name: Build KPI + stazioni + OD and merge into docs/data
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -192,8 +192,7 @@ jobs:
               for c in cols:
                   if c not in df.columns:
                       df[c] = pd.NA
-              df = df[cols]
-              return df
+              return df[cols]
 
           con = duckdb.connect()
           con.execute("PRAGMA threads=4")
@@ -228,19 +227,32 @@ jobs:
               mese,
               categoria,
               numero_treno,
-              UNNEST(fr) WITH ORDINALITY AS s(stop, idx)
+              fr,
+              array_length(fr) AS max_idx
             FROM trains_clean
+            WHERE fr IS NOT NULL AND array_length(fr) > 0
           ),
-          w AS (
+          idxs AS (
+            SELECT
+              giorno,
+              mese,
+              categoria,
+              numero_treno,
+              max_idx,
+              UNNEST(range(1, max_idx + 1)) AS idx
+            FROM base
+          ),
+          s AS (
             SELECT
               giorno,
               mese,
               categoria,
               numero_treno,
               idx,
-              MAX(idx) OVER (PARTITION BY giorno, categoria, numero_treno) AS max_idx,
-              stop
+              max_idx,
+              list_extract(fr, idx) AS stop
             FROM base
+            JOIN idxs USING (giorno, mese, categoria, numero_treno, max_idx)
           )
           SELECT
             giorno,
@@ -258,7 +270,7 @@ jobs:
               WHEN lower(trim(CAST(stop.ra AS VARCHAR))) IN ('n','n.d.','nd','') THEN NULL
               ELSE TRY_CAST(stop.ra AS DOUBLE)
             END AS ra_min
-          FROM w
+          FROM s
           WHERE stop.n IS NOT NULL
           """)
 
@@ -447,8 +459,7 @@ jobs:
           merge_csv(DOCS / "stazioni_mese_categoria_ruolo.csv", align_to_existing_schema(DOCS / "stazioni_mese_categoria_ruolo.csv", st_ruolo), ["mese","categoria","ruolo","stazione"])
 
           if (DOCS / "od_mese_categoria.csv").exists():
-              od2 = align_to_existing_schema(DOCS / "od_mese_categoria.csv", od)
-              merge_csv(DOCS / "od_mese_categoria.csv", od2, ["mese","categoria","origine","destinazione"])
+              merge_csv(DOCS / "od_mese_categoria.csv", align_to_existing_schema(DOCS / "od_mese_categoria.csv", od), ["mese","categoria","origine","destinazione"])
 
           (ROOT / "docs" / ".nojekyll").touch()
           print("updated docs/data")
@@ -459,5 +470,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/data docs/.nojekyll
-          git commit -m "Backfill 2024-06 (KPI + stations + OD) merge" || echo "No changes"
+          git commit -m "Backfill 2024-06 (KPI + stazioni + OD) merge" || echo "No changes"
           git push
