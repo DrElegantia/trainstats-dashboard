@@ -154,6 +154,7 @@ jobs:
               if not treni_list:
                   skipped += 1
                   continue
+
               tdf = pd.json_normalize(treni_list)
 
               if "fr" in tdf.columns:
@@ -179,12 +180,13 @@ jobs:
           print("written:", out_path, "rows:", len(out), "skipped_days:", skipped)
           PY
 
-      - name: Build KPI + stazioni + OD + distribuzioni and merge into docs/data
+      - name: Build KPI + stazioni + OD + hist decili and merge into docs/data
         run: |
           python - <<'PY'
           from pathlib import Path
           import duckdb
           import pandas as pd
+          import re
 
           ROOT = Path(".").resolve()
           DOCS = ROOT / "docs" / "data"
@@ -208,18 +210,31 @@ jobs:
 
           def _norm_key(series: pd.Series, name: str) -> pd.Series:
               s = series.copy()
-              if name in ("giorno", "mese"):
+
+              if name == "mese":
+                  ss = s.dropna().astype(str)
+                  if len(ss) > 0 and ss.map(lambda x: bool(re.match(r"^\d{4}-\d{2}$", x))).all():
+                      return s.astype(str)
                   dt = pd.to_datetime(s, errors="coerce")
                   if dt.notna().any():
                       out = dt.dt.date.astype(str)
                       return out.where(dt.notna(), s.astype(str))
+                  return s.astype(str)
+
+              if name == "giorno":
+                  dt = pd.to_datetime(s, errors="coerce")
+                  if dt.notna().any():
+                      out = dt.dt.date.astype(str)
+                      return out.where(dt.notna(), s.astype(str))
+                  return s.astype(str)
+
               return s.astype(str)
 
           def merge_csv_safe(path: Path, new_df: pd.DataFrame, key_cols):
               new_df = new_df.copy()
               for k in key_cols:
                   if k not in new_df.columns:
-                      raise KeyError(f"merge_csv: missing key col {k} for {path.name}. have={list(new_df.columns)[:160]}")
+                      raise KeyError(f"merge_csv: missing key col {k} for {path.name}. have={list(new_df.columns)[:180]}")
 
               if path.exists():
                   old = pd.read_csv(path)
@@ -247,8 +262,8 @@ jobs:
                           merged[c] = merged[cn].combine_first(merged[c])
                           merged = merged.drop(columns=[cn])
 
-                  leftover_new = [c for c in merged.columns if c.endswith("__new")]
-                  for cn in leftover_new:
+                  leftovers = [c for c in merged.columns if c.endswith("__new")]
+                  for cn in leftovers:
                       c = cn[:-5]
                       merged[c] = merged[cn]
                       merged = merged.drop(columns=[cn])
@@ -286,14 +301,6 @@ jobs:
                   sub = old[["nome_arrivo", "cod_arrivo"]].dropna().drop_duplicates()
                   ma = dict(zip(sub["nome_arrivo"], sub["cod_arrivo"]))
               return mp, ma
-
-          def pick_existing_decile_file(docs_dir: Path):
-              candidates = []
-              for p in docs_dir.glob("*.csv"):
-                  name = p.name.lower()
-                  if "dec" in name and ("arrivo" in name or "ritardo" in name):
-                      candidates.append(p)
-              return sorted(candidates)[0] if candidates else None
 
           con = duckdb.connect()
           con.execute("PRAGMA threads=4")
@@ -557,14 +564,14 @@ jobs:
           ORDER BY 1,2,3,4
           """).fetchdf()
 
-          dist_decili_arrivo = con.execute("""
+          hist_decili = con.execute("""
           WITH ranked AS (
             SELECT
-              mese,
+              strftime(mese, '%Y-%m') AS mese,
               categoria,
               ra_min,
               ntile(10) OVER (
-                PARTITION BY mese, categoria
+                PARTITION BY strftime(mese, '%Y-%m'), categoria
                 ORDER BY ra_min
               ) AS decile
             FROM trains_clean
@@ -574,10 +581,9 @@ jobs:
             mese,
             categoria,
             decile,
-            COUNT(*) AS corse,
-            MIN(ra_min) AS min_decile,
-            MAX(ra_min) AS max_decile,
-            AVG(ra_min) AS media_decile
+            COUNT(*) AS count,
+            SUM(CASE WHEN ra_min > 0 THEN ra_min ELSE 0 END) AS minuti_ritardo,
+            SUM(CASE WHEN ra_min < 0 THEN -ra_min ELSE 0 END) AS minuti_anticipo
           FROM ranked
           GROUP BY 1,2,3
           ORDER BY 1,2,3
@@ -588,6 +594,7 @@ jobs:
           st_nodo_path = DOCS / "stazioni_mese_categoria_nodo.csv"
           st_ruolo_path = DOCS / "stazioni_mese_categoria_ruolo.csv"
           od_path = DOCS / "od_mese_categoria.csv"
+          hist_path = DOCS / "hist_mese_categoria.csv"
 
           code_map = build_station_code_map(st_nodo_path)
           st_nodo = st_nodo.copy()
@@ -606,6 +613,11 @@ jobs:
           od["cod_partenza"] = od["nome_partenza"].astype(str).map(mp).fillna(od["nome_partenza"].astype(str))
           od["cod_arrivo"] = od["nome_arrivo"].astype(str).map(ma).fillna(od["nome_arrivo"].astype(str))
 
+          hist_decili = hist_decili.copy()
+          hist_decili["bucket_ritardo_arrivo"] = hist_decili["decile"].apply(lambda d: f"D{int(d):02d}")
+          hist_decili = hist_decili.drop(columns=["decile"], errors="ignore")
+          hist_decili = hist_decili[["mese","categoria","bucket_ritardo_arrivo","count","minuti_ritardo","minuti_anticipo"]]
+
           merge_csv_safe(DOCS / "kpi_giorno.csv", align_to_existing_schema(DOCS / "kpi_giorno.csv", kpi_giorno), ["giorno"])
           merge_csv_safe(DOCS / "kpi_mese.csv", align_to_existing_schema(DOCS / "kpi_mese.csv", kpi_mese), ["mese"])
           merge_csv_safe(DOCS / "kpi_giorno_categoria.csv", align_to_existing_schema(DOCS / "kpi_giorno_categoria.csv", kpi_giorno_cat), ["giorno","categoria"])
@@ -616,11 +628,7 @@ jobs:
 
           merge_csv_safe(od_path, align_to_existing_schema(od_path, od), ["mese","categoria","cod_partenza","cod_arrivo"])
 
-          decile_path = pick_existing_decile_file(DOCS)
-          if decile_path is None:
-              decile_path = DOCS / "distribuzione_ritardo_arrivo_decili_mese_categoria.csv"
-
-          merge_csv_safe(decile_path, align_to_existing_schema(decile_path, dist_decili_arrivo), ["mese","categoria","decile"])
+          merge_csv_safe(hist_path, align_to_existing_schema(hist_path, hist_decili), ["mese","categoria","bucket_ritardo_arrivo"])
 
           (ROOT / "docs" / ".nojekyll").touch()
           print("updated docs/data")
@@ -631,5 +639,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/data docs/.nojekyll
-          git commit -m "Backfill 2024-06 (KPI + stazioni + OD + distribuzioni) merge" || echo "No changes"
+          git commit -m "Backfill 2024-06 (KPI + stazioni + OD + hist decili) merge" || echo "No changes"
           git push
