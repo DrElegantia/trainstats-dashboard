@@ -173,12 +173,18 @@ jobs:
               raise SystemExit(f"Missing {trains_path}")
 
           def merge_csv(path: Path, new_df: pd.DataFrame, key_cols):
+              for k in key_cols:
+                  if k not in new_df.columns:
+                      raise KeyError(f"merge_csv: missing key col {k} for {path.name}. have={list(new_df.columns)[:30]}")
               if path.exists():
                   old = pd.read_csv(path)
                   df = pd.concat([old, new_df], ignore_index=True)
+                  for k in key_cols:
+                      if k not in df.columns:
+                          df[k] = pd.NA
                   df = df.drop_duplicates(subset=key_cols, keep="last")
               else:
-                  df = new_df
+                  df = new_df.drop_duplicates(subset=key_cols, keep="last")
               try:
                   df = df.sort_values(key_cols)
               except Exception:
@@ -244,15 +250,20 @@ jobs:
           ),
           s AS (
             SELECT
-              giorno,
-              mese,
-              categoria,
-              numero_treno,
-              idx,
-              max_idx,
-              list_extract(fr, idx) AS stop
+              base.giorno,
+              base.mese,
+              base.categoria,
+              base.numero_treno,
+              idxs.idx,
+              base.max_idx,
+              list_extract(base.fr, idxs.idx) AS stop
             FROM base
-            JOIN idxs USING (giorno, mese, categoria, numero_treno, max_idx)
+            JOIN idxs
+              ON base.giorno = idxs.giorno
+             AND base.mese = idxs.mese
+             AND base.categoria = idxs.categoria
+             AND base.numero_treno = idxs.numero_treno
+             AND base.max_idx = idxs.max_idx
           )
           SELECT
             giorno,
@@ -374,7 +385,7 @@ jobs:
             SUM(CASE WHEN ra_min IS NULL THEN 1 ELSE 0 END) AS info_mancante,
             SUM(CASE WHEN ra_min IS NOT NULL AND ra_min = 0 THEN 1 ELSE 0 END) AS in_orario,
             SUM(CASE WHEN ra_min IS NOT NULL AND ra_min > 0 THEN 1 ELSE 0 END) AS in_ritardo,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min < 0 THEN 1 ELSE 0 END) AS in_anticipo,
+            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min < 0 END) AS in_anticipo,
             SUM(CASE WHEN ra_min > 5 THEN 1 ELSE 0 END) AS oltre_5,
             SUM(CASE WHEN ra_min > 10 THEN 1 ELSE 0 END) AS oltre_10,
             SUM(CASE WHEN ra_min > 15 THEN 1 ELSE 0 END) AS oltre_15,
