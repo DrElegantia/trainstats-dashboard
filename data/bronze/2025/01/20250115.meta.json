@@ -2,7 +2,7 @@
   "reference_date": "2025-01-15",
   "range_start": "2025-01-15",
   "range_end": "2025-01-15",
-  "extracted_at_utc": "2026-02-14T15:27:50Z",
+  "extracted_at_utc": "2026-02-15T09:39:40Z",
   "source_url": "https://trainstats.altervista.org/exportcsvint.php?type=treni&action=show&di=15_01_2025&df=15_01_2025&fields=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20",
   "bytes": 429,
   "header": [
