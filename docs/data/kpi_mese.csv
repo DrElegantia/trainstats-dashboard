@@ -1,2 +1,4 @@
-mese,corse_osservate,ritardo_medio,ritardo_mediano,p90,oltre_5,oltre_10,oltre_15,oltre_30,oltre_60
-2024-06-01,170347,2.4732172589315446,1.0,8.0,25404.0,12523.0,7751.0,3016.0,864.0
+mese,corse_osservate,ritardo_medio,ritardo_mediano,p90,oltre_5,oltre_10,oltre_15,oltre_30,oltre_60,effettuate,cancellate,soppresse,parzialmente_cancellate,info_mancante,in_orario,in_ritardo,in_anticipo,minuti_ritardo_tot,minuti_anticipo_tot,minuti_netti_tot,p95
+2024-06-01,170347,2.559427651650997,0.782608695652174,8.695652173913043,25404,12523,7751,3016,864,,,,,,,,,,,,
+2025-12,77,0.11688311688311688,-1.0,5.400000000000006,9,5,2,2,1,77.0,0.0,0.0,0.0,0.0,21.0,9.0,47.0,206.0,197.0,9.0,10.600000000000009
+2026-01,5475,0.8728767123287671,0.0,5.0,591,255,180,84,20,5475.0,0.0,0.0,0.0,0.0,2176.0,591.0,2708.0,12514.0,7735.0,4779.0,9.0
