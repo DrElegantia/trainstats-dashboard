@@ -207,7 +207,7 @@ jobs:
             strptime(ref_day, '%Y%m%d')::DATE AS giorno,
             date_trunc('month', strptime(ref_day, '%Y%m%d')::DATE)::DATE AS mese,
             COALESCE(CAST(c AS VARCHAR), 'UNK') AS categoria,
-            COALESCE(CAST(n AS VARCHAR), CAST(numero AS VARCHAR), CAST(train AS VARCHAR), CAST(_id AS VARCHAR), 'UNK') AS numero_treno,
+            COALESCE(CAST(n AS VARCHAR), CAST(_id AS VARCHAR), 'UNK') AS numero_treno,
             COALESCE(CAST(p AS VARCHAR), 'UNK') AS origine,
             COALESCE(CAST(a AS VARCHAR), 'UNK') AS destinazione,
             CASE
@@ -450,53 +450,6 @@ jobs:
               od2 = align_to_existing_schema(DOCS / "od_mese_categoria.csv", od)
               merge_csv(DOCS / "od_mese_categoria.csv", od2, ["mese","categoria","origine","destinazione"])
 
-          if (DOCS / "hist_mese_categoria.csv").exists():
-              trains_df = pd.read_parquet(trains_path)
-              if "ref_day" in trains_df.columns and ("c" in trains_df.columns) and ("ra" in trains_df.columns):
-                  d = trains_df[["ref_day","c","ra"]].copy()
-                  d["mese"] = pd.to_datetime(d["ref_day"], format="%Y%m%d", errors="coerce").dt.to_period("M").dt.to_timestamp()
-                  d["categoria"] = d["c"].astype(str).fillna("UNK")
-                  def parse_ra(x):
-                      try:
-                          s = str(x).strip().lower()
-                          if s in ("n","n.d.","nd",""):
-                              return None
-                          return float(s)
-                      except Exception:
-                          return None
-                  d["ra_min"] = d["ra"].map(parse_ra)
-                  bins = [-1e9, -60, -30, -15, -10, -5, 0, 5, 10, 15, 30, 60, 1e9]
-                  labels = ["<-60","-60:-30","-30:-15","-15:-10","-10:-5","-5:0","0:5","5:10","10:15","15:30","30:60",">60"]
-                  d = d.dropna(subset=["mese","categoria","ra_min"])
-                  d["classe"] = pd.cut(d["ra_min"], bins=bins, labels=labels, right=False)
-                  h = d.groupby(["mese","categoria","classe"], dropna=False).size().reset_index(name="count")
-                  h = h.rename(columns={"classe":"bin"})
-                  h["mese"] = pd.to_datetime(h["mese"]).dt.date
-                  h = align_to_existing_schema(DOCS / "hist_mese_categoria.csv", h)
-                  merge_csv(DOCS / "hist_mese_categoria.csv", h, ["mese","categoria","bin"])
-
-          stations_file = DOCS / "stations_dim.csv"
-          if stations_file.exists():
-              st_names = pd.read_csv(stations_file)
-              existing_colset = st_names.columns.tolist()
-          else:
-              st_names = pd.DataFrame(columns=["stazione","lat","lon"])
-              existing_colset = st_names.columns.tolist()
-
-          st_unique = pd.read_csv(DOCS / "stazioni_mese_categoria_nodo.csv")[["stazione"]].dropna().drop_duplicates()
-          if "stazione" not in st_names.columns:
-              st_names["stazione"] = pd.Series(dtype="object")
-          missing = st_unique[~st_unique["stazione"].isin(st_names["stazione"].astype(str))]
-          if len(missing):
-              add = pd.DataFrame({"stazione": missing["stazione"].astype(str)})
-              for c in st_names.columns:
-                  if c not in add.columns:
-                      add[c] = pd.NA
-              add = add[st_names.columns]
-              st_names = pd.concat([st_names, add], ignore_index=True)
-              st_names = st_names.drop_duplicates(subset=["stazione"], keep="first")
-              st_names.to_csv(stations_file, index=False)
-
           (ROOT / "docs" / ".nojekyll").touch()
           print("updated docs/data")
           PY
@@ -506,5 +459,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/data docs/.nojekyll
-          git commit -m "Backfill 2024-06 (KPI + stations + dist + OD) merge" || echo "No changes"
+          git commit -m "Backfill 2024-06 (KPI + stations + OD) merge" || echo "No changes"
           git push
