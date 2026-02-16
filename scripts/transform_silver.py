@@ -1,9 +1,7 @@
 # scripts/transform_silver.py
 from __future__ import annotations
 
-import ast
 import gzip
-import hashlib
 import os
 import re
 from datetime import date
@@ -19,6 +17,12 @@ from .utils import (
     normalize_station_name,
     parse_dt_it,
     safe_int,
+)
+
+from .silver_schema import (
+    code_from_station_name,
+    missing_station_code,
+    normalize_bronze_schema,
 )
 
 
@@ -54,91 +58,6 @@ def read_bronze(csv_gz: str, meta_path: str) -> pd.DataFrame:
     df["_bronze_path"] = csv_gz
     df["_reference_date"] = str(meta.get("reference_date", ""))
     return df
-
-
-def _epoch_to_it_string(v: Any) -> str:
-    if v is None:
-        return ""
-    s = str(v).strip()
-    if s == "" or s == "0":
-        return ""
-    try:
-        ts = pd.to_datetime(int(float(s)), unit="s", utc=True).tz_convert("Europe/Rome")
-        return ts.strftime("%d/%m/%Y %H:%M")
-    except Exception:
-        return ""
-
-
-def _parse_treni_payload(x: Any) -> List[Dict[str, Any]]:
-    if x is None:
-        return []
-    s = str(x).strip()
-    if not s or s.lower() == "nan":
-        return []
-    try:
-        parsed = ast.literal_eval(s)
-    except Exception:
-        return []
-    if isinstance(parsed, list):
-        return [r for r in parsed if isinstance(r, dict)]
-    return []
-
-
-def _missing_station_code(v: Any) -> bool:
-    if v is None:
-        return True
-    s = str(v).strip()
-    return s == "" or s.lower() in {"nan", "none", "null"}
-
-
-def _code_from_station_name(name: Any) -> str:
-    n = normalize_station_name(name)
-    if not n:
-        return ""
-    digest = hashlib.sha1(n.encode("utf-8")).hexdigest()[:12].upper()
-    return f"N_{digest}"
-
-
-def normalize_bronze_schema(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize known bronze layouts into the historical tabular schema."""
-    if "Categoria" in df.columns and "Numero treno" in df.columns:
-        return df
-
-    if "treni" not in df.columns:
-        return df
-
-    rows: List[Dict[str, Any]] = []
-    for _, r in df.iterrows():
-        for t in _parse_treni_payload(r.get("treni")):
-            rows.append(
-                {
-                    "Categoria": t.get("c", ""),
-                    "Numero treno": t.get("n", ""),
-                    "Codice stazione partenza": "",
-                    "Nome stazione partenza": t.get("p", ""),
-                    "Ora partenza programmata": _epoch_to_it_string(t.get("op")),
-                    "Ritardo partenza": t.get("rp", ""),
-                    "Codice stazione arrivo": "",
-                    "Nome stazione arrivo": t.get("a", ""),
-                    "Ora arrivo programmata": _epoch_to_it_string(t.get("oa")),
-                    "Ritardo arrivo": t.get("ra", ""),
-                    "Cambi numerazione": "",
-                    "Provvedimenti": "",
-                    "Variazioni": "",
-                    "Stazione estera partenza": "",
-                    "Orario estero partenza": "",
-                    "Stazione estera arrivo": "",
-                    "Orario estero arrivo": "",
-                    "_extracted_at_utc": r.get("_extracted_at_utc", ""),
-                    "_bronze_path": r.get("_bronze_path", ""),
-                    "_reference_date": r.get("_reference_date", ""),
-                }
-            )
-
-    if not rows:
-        return df.iloc[0:0].copy()
-
-    return pd.DataFrame(rows)
 
 
 def canonical_rename(df: pd.DataFrame) -> pd.DataFrame:
@@ -242,10 +161,10 @@ def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
 
     # Alcuni bronze (schema "treni") non forniscono codici stazione: deriviamo un codice
     # stabile dal nome per mantenere le aggregazioni station-level in gold/stations_dim.
-    miss_dep = df["cod_partenza"].map(_missing_station_code)
-    miss_arr = df["cod_arrivo"].map(_missing_station_code)
-    df.loc[miss_dep, "cod_partenza"] = df.loc[miss_dep, "nome_partenza"].map(_code_from_station_name)
-    df.loc[miss_arr, "cod_arrivo"] = df.loc[miss_arr, "nome_arrivo"].map(_code_from_station_name)
+    miss_dep = df["cod_partenza"].map(missing_station_code)
+    miss_arr = df["cod_arrivo"].map(missing_station_code)
+    df.loc[miss_dep, "cod_partenza"] = df.loc[miss_dep, "nome_partenza"].map(code_from_station_name)
+    df.loc[miss_arr, "cod_arrivo"] = df.loc[miss_arr, "nome_arrivo"].map(code_from_station_name)
 
     df["ritardo_partenza_min"] = df.get("ritardo_partenza_raw", "").map(safe_int)
     df["ritardo_arrivo_min"] = df.get("ritardo_arrivo_raw", "").map(safe_int)
