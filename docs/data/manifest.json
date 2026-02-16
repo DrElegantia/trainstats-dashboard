@@ -1,0 +1,42 @@
+{
+  "built_at_utc": "2026-02-16T00:12:36Z",
+  "gold_files": [
+    "hist_giorno_categoria.csv",
+    "hist_mese_categoria.csv",
+    "kpi_giorno.csv",
+    "kpi_giorno_categoria.csv",
+    "kpi_mese.csv",
+    "kpi_mese_categoria.csv",
+    "od_giorno_categoria.csv",
+    "od_mese_categoria.csv",
+    "stazioni_giorno_categoria_nodo.csv",
+    "stazioni_giorno_categoria_ruolo.csv",
+    "stazioni_mese_categoria_nodo.csv",
+    "stazioni_mese_categoria_ruolo.csv"
+  ],
+  "punctuality": {
+    "on_time_threshold_minutes": 4
+  },
+  "delay_buckets_minutes": {
+    "labels": [
+      "<=-60",
+      "(-60,-30]",
+      "(-30,-15]",
+      "(-15,-10]",
+      "(-10,-5]",
+      "(-5,-1]",
+      "(-1,0]",
+      "(0,1]",
+      "(1,5]",
+      "(5,10]",
+      "(10,15]",
+      "(15,30]",
+      "(30,60]",
+      "(60,120]",
+      ">120"
+    ]
+  },
+  "min_counts": {
+    "leaderboard_min_trains": 30
+  }
+}
