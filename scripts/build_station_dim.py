@@ -1,13 +1,27 @@
 from __future__ import annotations
 
+import io
+import json
 import os
 import re
-import json
+import time
 import unicodedata
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
-from typing import Optional, Any, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
+
+
+STATION_NAME_COORDS_URL = os.environ.get(
+    "TRAINSTATS_STATION_NAME_COORDS_URL",
+    "https://gist.githubusercontent.com/MarcoBuster/5a142febd4a2032505f4acd20326146c/raw/252fae1074a2766e9940f31dbb57be556987f8fa/Stazioni%2520italiane.csv",
+)
+
+STATION_NAME_COORDS_CACHE_PATH = os.path.join("data", "stations", "stazioni_italiane.csv")
+GEOCODE_CACHE_PATH = os.path.join("data", "stations", "geocode_cache.json")
+STATIONS_REGISTRY_PATH = os.path.join("data", "stations", "stations.csv")
 
 
 def _ensure_dir(path: str) -> None:
@@ -104,6 +118,80 @@ def _pick_first_col(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str
     return None
 
 
+def _site_data_roots() -> List[str]:
+    roots: List[str] = []
+    roots.append(os.path.join("docs", "data"))
+    if os.path.isdir(os.path.join("trainstats-dashboard", "docs")):
+        roots.append(os.path.join("trainstats-dashboard", "docs", "data"))
+    return roots
+
+
+def _norm_station_name_key(x: Any) -> str:
+    s = str(x or "").strip()
+    s = s.lstrip("\ufeff")
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.lower()
+    s = s.replace("`", "'")
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"[^a-z0-9 ]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _download_text(url: str, timeout_s: int = 40) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": "trainstats-dashboard"})
+    with urllib.request.urlopen(req, timeout=timeout_s) as r:
+        b = r.read()
+    return b.decode("utf-8", errors="replace")
+
+
+def _normalize_csv_text_rows(text: str) -> str:
+    s = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not s:
+        return ""
+    s = re.sub(r"\s+(?=[A-Z]\d{5},)", "\n", s)
+    if not s.endswith("\n"):
+        s += "\n"
+    return s
+
+
+def _load_station_name_coords() -> Dict[str, Tuple[float, float]]:
+    if os.path.exists(STATION_NAME_COORDS_CACHE_PATH) and os.path.getsize(STATION_NAME_COORDS_CACHE_PATH) > 1000:
+        raw = open(STATION_NAME_COORDS_CACHE_PATH, "r", encoding="utf-8", errors="replace").read()
+    else:
+        raw = _download_text(STATION_NAME_COORDS_URL)
+        raw = _normalize_csv_text_rows(raw)
+        _ensure_dir(os.path.dirname(STATION_NAME_COORDS_CACHE_PATH))
+        with open(STATION_NAME_COORDS_CACHE_PATH, "w", encoding="utf-8") as f:
+            f.write(raw)
+
+    raw = _normalize_csv_text_rows(raw)
+    df = pd.read_csv(io.StringIO(raw), dtype=str, keep_default_na=False, na_filter=False)
+
+    name_col = _pick_first_col(df, ["long_name", "nome_stazione", "nome", "station_name"])
+    short_col = _pick_first_col(df, ["short_name"])
+    lat_col = _pick_first_col(df, ["latitude", "lat"])
+    lon_col = _pick_first_col(df, ["longitude", "lon"])
+
+    if name_col is None or lat_col is None or lon_col is None:
+        return {}
+
+    out: Dict[str, Tuple[float, float]] = {}
+    for _, r in df.iterrows():
+        n1 = _norm_station_name_key(r.get(name_col))
+        n2 = _norm_station_name_key(r.get(short_col)) if short_col else ""
+        lat = _parse_float_maybe(r.get(lat_col))
+        lon = _parse_float_maybe(r.get(lon_col))
+        if lat is None or lon is None:
+            continue
+        if n1:
+            out[n1] = (lat, lon)
+        if n2 and n2 not in out:
+            out[n2] = (lat, lon)
+    return out
+
+
 def _load_gold_station_seed() -> pd.DataFrame:
     gold_candidates = [
         os.path.join("data", "gold", "stazioni_mese_categoria_nodo.csv"),
@@ -160,7 +248,7 @@ def _load_od_station_seed() -> pd.DataFrame:
     col_dep_name = _pick_first_col(df, ["nome_partenza", "nome_stazione_partenza"])
     col_arr_name = _pick_first_col(df, ["nome_arrivo", "nome_stazione_arrivo"])
 
-    rows = []
+    rows: List[pd.DataFrame] = []
     if col_dep:
         tmp = pd.DataFrame({"cod_stazione": df[col_dep].map(_norm_station_code)})
         tmp["nome_stazione"] = df[col_dep_name].astype(str).str.strip() if col_dep_name else ""
@@ -179,47 +267,187 @@ def _load_od_station_seed() -> pd.DataFrame:
 
 
 def _load_station_registry() -> pd.DataFrame:
-    p = os.path.join("data", "stations", "stations.csv")
-    if not os.path.exists(p):
+    if not os.path.exists(STATIONS_REGISTRY_PATH):
         return pd.DataFrame(columns=["cod_stazione", "nome_stazione", "lat", "lon", "citta"])
 
-    df = _read_csv_any(p)
+    df = _read_csv_any(STATIONS_REGISTRY_PATH)
+    if df.empty:
+        return pd.DataFrame(columns=["cod_stazione", "nome_stazione", "lat", "lon", "citta"])
+
     df.columns = [str(c) for c in df.columns]
 
-    col_code = _pick_first_col(df, ["cod_stazione", "codice", "codice_stazione", "code", "station_code", "id"])
-    col_name = _pick_first_col(df, ["nome_stazione", "nome", "nome_norm", "station_name"])
-    col_city = _pick_first_col(
-        df,
-        [
-            "citta",
-            "citta_nome",
-            "citta_stazione",
-            "comune",
-            "city",
-            "nome_comune",
-            "localita",
-            "località",
-            "città",
-        ],
-    )
+    if "cod_stazione" not in df.columns:
+        c = _pick_first_col(df, ["codice", "code", "station_code", "id"])
+        if c:
+            df = df.rename(columns={c: "cod_stazione"})
+    if "nome_stazione" not in df.columns:
+        c = _pick_first_col(df, ["nome", "station_name", "stazione", "long_name", "short_name"])
+        if c:
+            df = df.rename(columns={c: "nome_stazione"})
+    if "citta" not in df.columns:
+        c = _pick_first_col(df, ["city", "comune", "localita", "località", "città"])
+        if c:
+            df = df.rename(columns={c: "citta"})
+    if "lat" not in df.columns:
+        c = _pick_first_col(df, ["latitude", "latitudine"])
+        if c:
+            df = df.rename(columns={c: "lat"})
+    if "lon" not in df.columns:
+        c = _pick_first_col(df, ["longitude", "longitudine", "lng"])
+        if c:
+            df = df.rename(columns={c: "lon"})
 
-    col_lat = _pick_first_col(df, ["lat", "latitude", "latitudine", "y", "y_wgs84", "lat_wgs84", "wgs84_lat"])
-    col_lon = _pick_first_col(df, ["lon", "lng", "long", "longitude", "longitudine", "x", "x_wgs84", "lon_wgs84", "wgs84_lon"])
-
-    if col_code is None:
-        raise ValueError("data/stations/stations.csv must contain a station code column")
+    for c in ["cod_stazione", "nome_stazione", "lat", "lon", "citta"]:
+        if c not in df.columns:
+            df[c] = ""
 
     out = pd.DataFrame()
-    out["cod_stazione"] = df[col_code].map(_norm_station_code)
-    out["nome_stazione"] = df[col_name].astype(str).str.strip() if col_name else ""
-    out["citta"] = df[col_city].astype(str).str.strip() if col_city else ""
-
-    out["lat"] = df[col_lat].map(_parse_float_maybe) if col_lat else None
-    out["lon"] = df[col_lon].map(_parse_float_maybe) if col_lon else None
+    out["cod_stazione"] = df["cod_stazione"].map(_norm_station_code)
+    out["nome_stazione"] = df["nome_stazione"].astype(str).str.strip()
+    out["citta"] = df["citta"].astype(str).str.strip()
+    out["lat"] = df["lat"].map(_parse_float_maybe)
+    out["lon"] = df["lon"].map(_parse_float_maybe)
 
     out = out[out["cod_stazione"] != ""]
     out = out.drop_duplicates(subset=["cod_stazione"]).reset_index(drop=True)
-    return out
+    return out[["cod_stazione", "nome_stazione", "lat", "lon", "citta"]].copy()
+
+
+def _load_geocode_cache() -> dict:
+    if not os.path.exists(GEOCODE_CACHE_PATH):
+        return {}
+    try:
+        with open(GEOCODE_CACHE_PATH, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_geocode_cache(cache: dict) -> None:
+    _ensure_dir(os.path.dirname(GEOCODE_CACHE_PATH))
+    with open(GEOCODE_CACHE_PATH, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def _nominatim_geocode(query: str) -> Optional[Tuple[float, float, str]]:
+    base = "https://nominatim.openstreetmap.org/search"
+    url = base + "?" + urllib.parse.urlencode(
+        {"q": query, "format": "jsonv2", "limit": 1, "countrycodes": "it", "addressdetails": 1}
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "trainstats-dashboard"})
+    with urllib.request.urlopen(req, timeout=25) as r:
+        data = json.loads(r.read().decode("utf-8", errors="replace"))
+    if not data:
+        return None
+    item = data[0]
+    lat = _parse_float_maybe(item.get("lat"))
+    lon = _parse_float_maybe(item.get("lon"))
+    if lat is None or lon is None:
+        return None
+    city = ""
+    try:
+        addr = item.get("address") or {}
+        city = str(addr.get("city") or addr.get("town") or addr.get("village") or addr.get("municipality") or "")
+    except Exception:
+        city = ""
+    return lat, lon, city
+
+
+def _fill_missing_coords(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    coords_db: Dict[str, Tuple[float, float]] = {}
+    try:
+        coords_db = _load_station_name_coords()
+    except Exception:
+        coords_db = {}
+
+    for i, row in df.iterrows():
+        if pd.notna(row.get("lat")) and pd.notna(row.get("lon")):
+            continue
+        k = _norm_station_name_key(row.get("nome_stazione"))
+        hit = coords_db.get(k)
+        if hit:
+            lat, lon = hit
+            df.at[i, "lat"] = lat
+            df.at[i, "lon"] = lon
+
+    if os.environ.get("TRAINSTATS_DISABLE_GEOCODE", "").strip().lower() in {"1", "true", "yes"}:
+        return df
+
+    cache = _load_geocode_cache()
+
+    def from_cache(code: str) -> Optional[Tuple[float, float, str]]:
+        obj = cache.get(code)
+        if not isinstance(obj, dict):
+            return None
+        lat = _parse_float_maybe(obj.get("lat"))
+        lon = _parse_float_maybe(obj.get("lon"))
+        city = str(obj.get("citta") or "")
+        if lat is None or lon is None:
+            return None
+        return lat, lon, city
+
+    changed = False
+
+    for i, row in df.iterrows():
+        code = str(row.get("cod_stazione") or "").strip()
+        if not code:
+            continue
+        if pd.notna(row.get("lat")) and pd.notna(row.get("lon")):
+            continue
+        hit = from_cache(code)
+        if hit:
+            lat, lon, city = hit
+            df.at[i, "lat"] = lat
+            df.at[i, "lon"] = lon
+            if not str(row.get("citta") or "").strip() and city:
+                df.at[i, "citta"] = city
+
+    missing = df[df["lat"].isna() | df["lon"].isna()]
+    if len(missing) == 0:
+        return df
+
+    for i, row in missing.iterrows():
+        code = str(row.get("cod_stazione") or "").strip()
+        name = str(row.get("nome_stazione") or "").strip()
+        if not code or not name:
+            continue
+
+        if isinstance(cache.get(code), dict) and cache[code].get("attempted"):
+            continue
+
+        city0 = str(row.get("citta") or "").strip()
+        q = f"stazione {name}, Italia"
+        if city0 and city0.lower() not in name.lower():
+            q = f"stazione {name}, {city0}, Italia"
+
+        coords = None
+        try:
+            coords = _nominatim_geocode(q)
+        except Exception:
+            coords = None
+
+        cache[code] = {"attempted": True, "query": q}
+        if coords:
+            lat, lon, city = coords
+            df.at[i, "lat"] = lat
+            df.at[i, "lon"] = lon
+            if not city0 and city:
+                df.at[i, "citta"] = city
+            cache[code]["lat"] = lat
+            cache[code]["lon"] = lon
+            cache[code]["citta"] = str(df.at[i, "citta"] or city or "")
+            changed = True
+
+        time.sleep(1.1)
+
+    if changed:
+        _save_geocode_cache(cache)
+
+    return df
 
 
 def _build_stations_dim() -> pd.DataFrame:
@@ -236,7 +464,10 @@ def _build_stations_dim() -> pd.DataFrame:
     out["nome_stazione"] = out["nome_stazione"].fillna("")
     if "nome_stazione_reg" in out.columns:
         out["nome_stazione_reg"] = out["nome_stazione_reg"].fillna("")
-        out["nome_stazione"] = out["nome_stazione"].where(out["nome_stazione"].str.strip() != "", out["nome_stazione_reg"])
+        out["nome_stazione"] = out["nome_stazione"].where(
+            out["nome_stazione"].str.strip() != "",
+            out["nome_stazione_reg"],
+        )
         out = out.drop(columns=["nome_stazione_reg"])
 
     out["citta"] = out["citta"].fillna("")
@@ -256,6 +487,7 @@ def _build_stations_dim() -> pd.DataFrame:
     out["lon"] = out["lon"].map(_parse_float_maybe)
 
     out = out[["cod_stazione", "nome_stazione", "lat", "lon", "citta"]].copy()
+    out = _fill_missing_coords(out)
     out = out.sort_values(["cod_stazione"]).reset_index(drop=True)
     return out
 
@@ -303,26 +535,30 @@ def main() -> None:
     stations_dim = _build_stations_dim()
     stations_dim["built_at_utc"] = built_at
 
-    n_total = int(len(stations_dim))
-    n_with_coords = int(stations_dim["lat"].notna().sum() if "lat" in stations_dim.columns else 0)
-
     cap = _fallback_capoluoghi()
 
-    out_paths = _write_many(
-        stations_dim,
-        [
-            os.path.join("data", "stations_dim.csv"),
-            os.path.join("data", "gold", "stations_dim.csv"),
-        ],
-    )
+    site_roots = _site_data_roots()
 
-    cap_paths = _write_many(
-        cap,
-        [
-            os.path.join("data", "capoluoghi_provincia.csv"),
-            os.path.join("data", "gold", "capoluoghi_provincia.csv"),
-        ],
-    )
+    station_paths: List[str] = [
+        os.path.join("data", "stations_dim.csv"),
+        os.path.join("data", "gold", "stations_dim.csv"),
+    ]
+    cap_paths: List[str] = [
+        os.path.join("data", "capoluoghi_provincia.csv"),
+        os.path.join("data", "gold", "capoluoghi_provincia.csv"),
+    ]
+
+    for root in site_roots:
+        station_paths.append(os.path.join(root, "stations_dim.csv"))
+        station_paths.append(os.path.join(root, "gold", "stations_dim.csv"))
+        cap_paths.append(os.path.join(root, "capoluoghi_provincia.csv"))
+        cap_paths.append(os.path.join(root, "gold", "capoluoghi_provincia.csv"))
+
+    out_paths = _write_many(stations_dim, station_paths)
+    out_cap_paths = _write_many(cap, cap_paths)
+
+    n_total = int(len(stations_dim))
+    n_with_coords = int(stations_dim["lat"].notna().sum()) if "lat" in stations_dim.columns else 0
 
     print(
         json.dumps(
@@ -331,8 +567,9 @@ def main() -> None:
                 "stations_dim_rows": n_total,
                 "stations_dim_with_coords": n_with_coords,
                 "stations_dim_written": out_paths,
-                "capoluoghi_written": cap_paths,
-            }
+                "capoluoghi_written": out_cap_paths,
+            },
+            ensure_ascii=False,
         )
     )
 
