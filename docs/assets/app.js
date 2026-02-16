@@ -45,11 +45,57 @@ async function fetchJsonOrNull(path) {
   }
 }
 
-const DATA_BASE_CANDIDATES = ["data/", "docs/data/", "site/data/"];
+function ensureTrailingSlash(p) {
+  const s = String(p || "");
+  return s.endsWith("/") ? s : s + "/";
+}
+
+const DATA_ROOT_CANDIDATES = ["data/", "./data/", "docs/data/", "site/data/"];
+
+async function fetchTextAny(paths) {
+  for (const p of paths) {
+    const t = await fetchTextOrNull(p);
+    if (t && String(t).trim().length) return t;
+  }
+  return null;
+}
+
+async function fetchJsonAny(paths) {
+  for (const p of paths) {
+    const j = await fetchJsonOrNull(p);
+    if (j && typeof j === "object") return j;
+  }
+  return null;
+}
+
+function uniq(arr) {
+  return Array.from(new Set(arr));
+}
+
+function candidateFilePaths(root, rel) {
+  const r = ensureTrailingSlash(root);
+  const clean = String(rel || "").replace(/^\/+/, "");
+  const out = [r + clean];
+  if (!clean.startsWith("gold/")) out.push(r + "gold/" + clean);
+  return uniq(out);
+}
 
 async function pickDataBase() {
-  const probes = ["manifest.json", "kpi_mese_categoria.csv", "kpi_giorno_categoria.csv", "kpi_mese.csv", "kpi_giorno.csv"];
-  for (const base of DATA_BASE_CANDIDATES) {
+  const probes = [
+    "manifest.json",
+    "gold/manifest.json",
+    "kpi_mese_categoria.csv",
+    "gold/kpi_mese_categoria.csv",
+    "kpi_giorno_categoria.csv",
+    "gold/kpi_giorno_categoria.csv",
+    "kpi_mese.csv",
+    "gold/kpi_mese.csv",
+    "kpi_giorno.csv",
+    "gold/kpi_giorno.csv"
+  ];
+
+  for (const base0 of DATA_ROOT_CANDIDATES) {
+    const base = ensureTrailingSlash(base0);
     for (const p of probes) {
       const t = await fetchTextOrNull(base + p);
       if (t && String(t).trim().length > 20) return base;
@@ -60,7 +106,9 @@ async function pickDataBase() {
 
 function detectDelimiter(line) {
   const s = String(line || "");
-  let comma = 0, semi = 0, tab = 0;
+  let comma = 0,
+    semi = 0,
+    tab = 0;
   let inQ = false;
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
@@ -131,8 +179,15 @@ function toNum(x) {
   return Number.isFinite(v) ? v : 0;
 }
 
-function uniq(arr) {
-  return Array.from(new Set(arr));
+function parseNumberAny(x) {
+  if (x === null || typeof x === "undefined") return NaN;
+  if (typeof x === "number") return x;
+  let s = String(x).trim();
+  if (!s) return NaN;
+  s = s.replace(/\s+/g, "");
+  if (s.includes(",") && !s.includes(".")) s = s.replace(",", ".");
+  const v = Number(s);
+  return Number.isFinite(v) ? v : NaN;
 }
 
 function fmtInt(x) {
@@ -151,93 +206,8 @@ function normalizeText(s) {
   return base.replace(/[\u0300-\u036f]/g, "");
 }
 
-
-function cleanStr(v) {
-  const s = String(v ?? "").trim();
-  if (!s) return "";
-  const lo = s.toLowerCase();
-  if (lo === "nan" || lo === "null" || lo === "undefined") return "";
-  return s;
-}
-
-function pad2(x) {
-  const s = String(x ?? "").trim();
-  if (s.length === 1) return "0" + s;
-  return s;
-}
-
-function normalizeDateKey(v) {
-  const raw = cleanStr(v);
-  if (!raw) return "";
-  const part = raw.replace("T", " ").split(" ")[0].trim();
-
-  if (/^\d{4}-\d{2}-\d{2}$/.test(part)) return part;
-
-  let m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(part);
-  if (m) return m[3] + "-" + m[2] + "-" + m[1];
-
-  m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(part);
-  if (m) return m[3] + "-" + m[2] + "-" + m[1];
-
-  m = /^(\d{4})\/(\d{2})\/(\d{2})$/.exec(part);
-  if (m) return m[1] + "-" + m[2] + "-" + m[3];
-
-  m = /^(\d{8})$/.exec(part);
-  if (m) return part.slice(0, 4) + "-" + part.slice(4, 6) + "-" + part.slice(6, 8);
-
-  m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(part);
-  if (m) return m[1] + "-" + pad2(m[2]) + "-" + pad2(m[3]);
-
-  try {
-    const dt = new Date(raw);
-    if (!Number.isNaN(dt.getTime())) {
-      const y = dt.getFullYear();
-      const mo = pad2(dt.getMonth() + 1);
-      const d = pad2(dt.getDate());
-      return String(y) + "-" + mo + "-" + d;
-    }
-  } catch {}
-
-  return part;
-}
-
-function normalizeMonthKey(v) {
-  const raw = cleanStr(v);
-  if (!raw) return "";
-  const part0 = raw.replace("T", " ").split(" ")[0].trim();
-
-  if (/^\d{4}-\d{2}$/.test(part0)) return part0;
-
-  let m = /^(\d{2})\/(\d{4})$/.exec(part0);
-  if (m) return m[2] + "-" + m[1];
-
-  m = /^(\d{4})\/(\d{2})$/.exec(part0);
-  if (m) return m[1] + "-" + m[2];
-
-  if (/^\d{6}$/.test(part0)) return part0.slice(0, 4) + "-" + part0.slice(4, 6);
-
-  if (/^\d{4}-\d{2}-\d{2}$/.test(part0)) return part0.slice(0, 7);
-
-  m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(part0);
-  if (m) return m[3] + "-" + m[2];
-
-  const part = part0.slice(0, 7);
-  if (/^\d{4}-\d{2}$/.test(part)) return part;
-
-  return part0;
-}
-
-function parseCoord(v) {
-  const s = cleanStr(v);
-  if (!s) return NaN;
-  const norm = s.replace(",", ".").replace(/\s+/g, "");
-  const n = parseFloat(norm);
-  return Number.isFinite(n) ? n : NaN;
-}
-
 function yearFromMonth(mese) {
-  const m = normalizeMonthKey(mese);
-  return String(m || "").slice(0, 4);
+  return String(mese || "").slice(0, 4);
 }
 
 function firstEl(ids) {
@@ -334,16 +304,16 @@ const state = {
 function stationName(code, fallback) {
   const c = String(code || "").trim();
   const ref = state.stationsRef.get(c);
-  const n = ref && ref.name ? cleanStr(ref.name) : "";
+  const n = ref && ref.name ? String(ref.name).trim() : "";
   if (n) return n;
-  const fb = cleanStr(fallback);
+  const fb = String(fallback || "").trim();
   return fb || c;
 }
 
 function stationCity(code, fallbackStationName) {
   const c = String(code || "").trim();
   const ref = state.stationsRef.get(c);
-  const city = ref && ref.city ? cleanStr(ref.city) : "";
+  const city = ref && ref.city ? String(ref.city).trim() : "";
   if (city) return city;
   return stationName(c, fallbackStationName);
 }
@@ -352,8 +322,9 @@ function stationCoords(code) {
   const c = String(code || "").trim();
   const ref = state.stationsRef.get(c);
   if (!ref) return null;
-  const lat = parseCoord(ref.lat);
-  const lon = parseCoord(ref.lon);
+  const lat = ref.lat;
+  const lon = ref.lon;
+  if (typeof lat !== "number" || typeof lon !== "number") return null;
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   return { lat, lon };
 }
@@ -417,10 +388,8 @@ function passArr(r) {
 
 function passYear(r, field) {
   if (state.filters.year === "all") return true;
-  const f = String(field || "").toLowerCase();
-  const raw = r ? r[field] : "";
-  const key = f.includes("giorno") || f.includes("day") || f.includes("date") ? normalizeDateKey(raw) : normalizeMonthKey(raw);
-  return String(key || "").slice(0, 4) === state.filters.year;
+  const k = String(r[field] || "");
+  return k.slice(0, 4) === state.filters.year;
 }
 
 function ensureWeekdays() {
@@ -446,9 +415,8 @@ function hasTimeFilter() {
 }
 
 function dowIndexFromISO(isoDate) {
-  const s = normalizeDateKey(isoDate);
-  if (!s) return null;
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s).slice(0, 10));
+  const s = String(isoDate || "").slice(0, 10);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
   if (!m) return null;
   const y = parseInt(m[1], 10);
   const mo = parseInt(m[2], 10);
@@ -512,7 +480,7 @@ function passTime(row) {
 }
 
 function passDayKey(row, field) {
-  const d = normalizeDateKey(row ? row[field] : "");
+  const d = String(row[field] || "").slice(0, 10);
   if (!d) return false;
 
   const from = String(state.filters.day_from || "").trim();
@@ -543,7 +511,7 @@ function passMonthFromDayRange(row, field) {
   const lo = (a <= b ? a : b).slice(0, 7);
   const hi = (a <= b ? b : a).slice(0, 7);
 
-  const m = normalizeMonthKey(row ? row[field] : "");
+  const m = String(row[field] || "").slice(0, 7);
   if (!m) return false;
 
   return m >= lo && m <= hi;
@@ -631,19 +599,6 @@ function initMap() {
     attribution: "&copy; OpenStreetMap contributors",
     maxZoom: 18
   }).addTo(state.map);
-
-  if (!state._mapResizeHook) {
-    state._mapResizeHook = true;
-    window.addEventListener(
-      \"resize\",
-      () => {
-        try {
-          if (state.map) state.map.invalidateSize();
-        } catch {}
-      },
-      { passive: true }
-    );
-  }
 
   setTimeout(() => {
     try {
@@ -905,8 +860,18 @@ function initFilters() {
     };
   }
 
-  const deps = uniq([...(state.data.odMonthCat || []).map((r) => r.cod_partenza), ...(state.data.odDayCat || []).map((r) => r.cod_partenza)].filter(Boolean));
-  const arrs = uniq([...(state.data.odMonthCat || []).map((r) => r.cod_arrivo), ...(state.data.odDayCat || []).map((r) => r.cod_arrivo)].filter(Boolean));
+  const deps = uniq(
+    [
+      ...(state.data.odMonthCat || []).map((r) => r.cod_partenza),
+      ...(state.data.odDayCat || []).map((r) => r.cod_partenza)
+    ].filter(Boolean)
+  );
+  const arrs = uniq(
+    [
+      ...(state.data.odMonthCat || []).map((r) => r.cod_arrivo),
+      ...(state.data.odDayCat || []).map((r) => r.cod_arrivo)
+    ].filter(Boolean)
+  );
 
   const depItems = buildStationItems(deps);
   const arrItems = buildStationItems(arrs);
@@ -1141,17 +1106,6 @@ function renderKPI() {
 
   setTextByIds(["cardCanc", "kpiCancelled", "kpiCancellati", "cancellati", "cancellate"], fmtInt(canc));
   setTextByIds(["cardSopp", "kpiSuppressed", "kpiSoppressi", "soppressi", "soppresse"], fmtInt(sopp));
-
-  if (!firstEl(["cardMin", "kpiMinutes", "kpiMinuti", "delayMinutes", "kpiLateMin", "kpiDelayMinutes", "kpiMinTotRitardo"])) {
-    try {
-      const all = Array.from(document.querySelectorAll("*"));
-      const target = all.find((n) => n && n.childNodes && n.childNodes.length === 1 && String(n.textContent || "").trim() === "Minuti totali di ritardo");
-      if (target && target.parentElement) {
-        const num = target.parentElement.querySelector("div,span,strong,h1,h2,h3,h4");
-        if (num) num.innerText = fmtInt(mins);
-      }
-    } catch {}
-  }
 }
 
 function seriesDaily() {
@@ -1164,7 +1118,7 @@ function seriesDaily() {
 
   const by = new Map();
   for (const r of rows) {
-    const day = normalizeDateKey(r.giorno || r.data || r.date || "");
+    const day = String(r.giorno || "").slice(0, 10);
     if (!day) continue;
     if (!by.has(day)) by.set(day, { key: day, corse: 0, rit: 0, min: 0 });
     const o = by.get(day);
@@ -1190,7 +1144,7 @@ function seriesMonthly() {
 
   const by = new Map();
   for (const r of rows) {
-    const m = normalizeMonthKey(r.mese || r.month || "");
+    const m = String(r.mese || "").slice(0, 7);
     if (!m) continue;
     if (!by.has(m)) by.set(m, { key: m, corse: 0, rit: 0, min: 0 });
     const o = by.get(m);
@@ -1290,9 +1244,10 @@ function renderHist() {
     byBucket.get(key).count += c;
   }
 
-  const order = Array.isArray(state.manifest.delay_bucket_labels) && state.manifest.delay_bucket_labels.length
-    ? state.manifest.delay_bucket_labels
-    : safeManifestDefaults().delay_bucket_labels;
+  const order =
+    Array.isArray(state.manifest.delay_bucket_labels) && state.manifest.delay_bucket_labels.length
+      ? state.manifest.delay_bucket_labels
+      : safeManifestDefaults().delay_bucket_labels;
 
   const x = [];
   const y = [];
@@ -1317,7 +1272,7 @@ function renderHist() {
       font: { color: "#e8eefc" }
     },
     { displayModeBar: false, responsive: true }
-  );
+    );
 }
 
 function isCapoluogoCity(cityName) {
@@ -1537,12 +1492,9 @@ function renderMap() {
   const bounds = [];
   for (const p of top) {
     const val = Number(p.v) || 0;
-    const mode = getMetricMode();
-    const valTxt = mode === "pct" ? fmtFloat(val) : fmtInt(val);
-    const label = p.nome + "<br>" + metricLabel() + ": " + valTxt;
+    const label = p.nome + "<br>" + metricLabel() + ": " + fmtFloat(val);
 
-    const radiusRaw = 5 + Math.sqrt(Math.max(0, Math.abs(val))) * 0.25;
-    const radius = Math.max(4, Math.min(22, radiusRaw));
+    const radius = 5 + Math.sqrt(Math.max(0, val)) * 0.25;
 
     const m = L.circleMarker([p.coords.lat, p.coords.lon], {
       radius,
@@ -1586,15 +1538,11 @@ function renderAll() {
 }
 
 async function loadStationsDimAnyBase(primaryBase) {
+  const base = ensureTrailingSlash(primaryBase);
   const tries = uniq([
-    primaryBase + "stations_dim.csv",
-    primaryBase + "station_dim.csv",
-    "docs/data/stations_dim.csv",
-    "docs/data/station_dim.csv",
-    "site/data/stations_dim.csv",
-    "site/data/station_dim.csv",
-    "data/stations_dim.csv",
-    "data/station_dim.csv"
+    ...candidateFilePaths(base, "stations_dim.csv"),
+    ...candidateFilePaths("data/", "stations_dim.csv"),
+    ...candidateFilePaths("./data/", "stations_dim.csv")
   ]);
   for (const p of tries) {
     const t = await fetchTextOrNull(p);
@@ -1604,7 +1552,12 @@ async function loadStationsDimAnyBase(primaryBase) {
 }
 
 async function loadCapoluoghiAnyBase(primaryBase) {
-  const tries = uniq([primaryBase + "capoluoghi_provincia.csv", "docs/data/capoluoghi_provincia.csv", "site/data/capoluoghi_provincia.csv", "data/capoluoghi_provincia.csv"]);
+  const base = ensureTrailingSlash(primaryBase);
+  const tries = uniq([
+    ...candidateFilePaths(base, "capoluoghi_provincia.csv"),
+    ...candidateFilePaths("data/", "capoluoghi_provincia.csv"),
+    ...candidateFilePaths("./data/", "capoluoghi_provincia.csv")
+  ]);
   for (const p of tries) {
     const t = await fetchTextOrNull(p);
     if (t && String(t).trim().length > 5) return parseCSV(t);
@@ -1618,7 +1571,7 @@ async function loadAll() {
   const base = await pickDataBase();
   state.dataBase = base;
 
-  const man = await fetchJsonOrNull(base + "manifest.json");
+  const man = await fetchJsonAny(candidateFilePaths(base, "manifest.json"));
   state.manifest = man || safeManifestDefaults();
 
   const built = state.manifest && state.manifest.built_at_utc ? state.manifest.built_at_utc : "";
@@ -1643,7 +1596,7 @@ async function loadAll() {
     "od_giorno_categoria.csv"
   ]);
 
-  const texts = await Promise.all(wanted.map((f) => fetchTextOrNull(base + f)));
+  const texts = await Promise.all(wanted.map((f) => fetchTextAny(candidateFilePaths(base, f))));
 
   const parsed = {};
   for (let i = 0; i < wanted.length; i++) {
@@ -1665,30 +1618,34 @@ async function loadAll() {
   const stRows = await loadStationsDimAnyBase(base);
 
   state.stationsRef.clear();
-  stRows.forEach((r) => {
+
+  let stationDimBuilt = "";
+  for (const r of stRows) {
+    const b = r.built_at_utc || r.built_at || r.data_build || r.data || "";
+    if (b && !stationDimBuilt) stationDimBuilt = String(b).trim();
+
     const code = String(r.cod_stazione || r.codice || r.cod || "").trim();
-    if (!code) return;
-    const name = cleanStr(r.nome_stazione || r.nome_norm || r.nome || "");
-    const lat = parseCoord(r.lat ?? r.latitude ?? r.latitudine ?? r.Lat ?? r.LAT ?? "");
-    const lon = parseCoord(r.lon ?? r.lng ?? r.long ?? r.longitude ?? r.longitudine ?? r.Lon ?? r.LON ?? "");
-    const city = cleanStr(r.citta || r.comune || r.city || r.nome_comune || "");
-    state.stationsRef.set(code, { code, name, lat, lon, city });
-  });
+    if (!code) continue;
 
-  let stTot = 0;
-  let stCoords = 0;
-  state.stationsRef.forEach((v) => {
-    stTot += 1;
-    if (Number.isFinite(v.lat) && Number.isFinite(v.lon)) stCoords += 1;
-  });
+    const name = String(r.nome_stazione || r.nome_norm || r.nome || "").trim();
+    const city = String(r.citta || r.comune || r.city || r.nome_comune || "").trim();
 
-  const built2 = state.manifest && state.manifest.built_at_utc ? state.manifest.built_at_utc : "";
-  setMeta((built2 ? "Build: " + built2 : "Build: sconosciuta") + " | base: " + base + " | stazioni con coordinate: " + stCoords + "/" + stTot);
+    const lat = parseNumberAny(r.lat ?? r.latitude ?? r.latitudine ?? r.y);
+    const lon = parseNumberAny(r.lon ?? r.lng ?? r.longitude ?? r.longitudine ?? r.x);
+
+    state.stationsRef.set(code, {
+      code,
+      name,
+      lat: Number.isFinite(lat) ? lat : NaN,
+      lon: Number.isFinite(lon) ? lon : NaN,
+      city
+    });
+  }
 
   const capRows = await loadCapoluoghiAnyBase(base);
   state.capoluoghiSet = new Set(
     capRows
-      .map((r) => normalizeText(cleanStr(r.citta || r.capoluogo || r.nome || r.city || "")))
+      .map((r) => normalizeText(r.citta || r.capoluogo || r.nome || r.city || ""))
       .filter(Boolean)
   );
 
@@ -1705,7 +1662,21 @@ async function loadAll() {
     (state.data.kpiDayCat && state.data.kpiDayCat.length) ||
     (state.data.histMonthCat && state.data.histMonthCat.length);
 
-  if (!haveAny) setMeta("Errore: non trovo CSV validi nella cartella dati. Base: " + base);
+  const coordCount = Array.from(state.stationsRef.values()).filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lon)).length;
+
+  const metaExtra =
+    " | mese cat: " +
+    (state.data.kpiMonthCat ? state.data.kpiMonthCat.length : 0) +
+    " | giorno cat: " +
+    (state.data.kpiDayCat ? state.data.kpiDayCat.length : 0) +
+    " | stazioni dim: " +
+    stRows.length +
+    " | stazioni coord: " +
+    coordCount +
+    (stationDimBuilt ? " | stations_dim build: " + stationDimBuilt : "");
+
+  if (!haveAny) setMeta("Errore: non trovo CSV validi. Base: " + base + metaExtra);
+  else setMeta((built ? "Build: " + built : "Build: sconosciuta") + " | base: " + base + metaExtra);
 }
 
 loadAll().catch((err) => {
