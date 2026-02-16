@@ -7,7 +7,7 @@ import sys
 from datetime import date, timedelta
 from typing import Optional, Set
 
-from .utils import load_yaml, today_in_tz
+from .utils import load_yaml, parse_cli_date, today_in_tz
 
 
 def call(cmd: list[str]) -> None:
@@ -28,6 +28,17 @@ def month_keys_between(d0: date, d1: date) -> list[str]:
         else:
             cur = date(cur.year, cur.month + 1, 1)
     return sorted(out)
+
+
+def expand_to_month_start(d0: date, d1: date) -> tuple[date, date]:
+    """
+    Espande l'intervallo per rigenerare il silver dall'inizio del mese coinvolto.
+
+    Questo evita di produrre parquet mensili parziali quando l'ambiente di esecuzione
+    non conserva i file silver tra un run e l'altro (es. GitHub Actions).
+    """
+    start_month = date(d0.year, d0.month, 1)
+    return start_month, d1
 
 
 def silver_path_for_month_key(month_key: str) -> str:
@@ -53,8 +64,19 @@ def run(start: date, end: date) -> None:
     # 1. Scarica dati raw
     call([sys.executable, "-m", "scripts.ingest", "--start", s, "--end", e])
     
-    # 2. Trasforma in silver
-    call([sys.executable, "-m", "scripts.transform_silver", "--start", s, "--end", e])
+    # 2. Trasforma in silver (month-to-date per evitare overwrite mensili parziali)
+    silver_start, silver_end = expand_to_month_start(start, end)
+    call(
+        [
+            sys.executable,
+            "-m",
+            "scripts.transform_silver",
+            "--start",
+            silver_start.isoformat(),
+            "--end",
+            silver_end.isoformat(),
+        ]
+    )
 
     # 3. Costruisci aggregazioni gold
     months = month_keys_between(start, end)
@@ -73,8 +95,8 @@ def main(start: Optional[str], end: Optional[str]) -> None:
     tz_name = cfg["project"]["timezone"]
 
     if start:
-        d0 = date.fromisoformat(start)
-        d1 = date.fromisoformat(end) if end else d0
+        d0 = parse_cli_date(start, 'start date')
+        d1 = parse_cli_date(end, 'end date') if end else d0
     else:
         today = today_in_tz(tz_name)
         d0 = today - timedelta(days=1)

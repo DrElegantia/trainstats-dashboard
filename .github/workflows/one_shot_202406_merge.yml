@@ -1,4 +1,4 @@
-name: One shot 2024-06 (days -> trains -> KPI + stazioni + OD -> merge)
+name: One shot backfill bronze -> gold/docs
 
 on:
   workflow_dispatch:
@@ -21,628 +21,78 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas pyarrow duckdb
+          pip install -r requirements.txt
 
-      - name: Bronze days to silver days (202406)
+      - name: Discover available bronze date range
+        id: bronze_range
         run: |
           python - <<'PY'
-          import json, re
-          import pandas as pd
-          from pathlib import Path
-
-          ROOT = Path(".").resolve()
-          BRONZE = ROOT / "data" / "bronze"
-          SILVER = ROOT / "data" / "silver"
-          SILVER.mkdir(parents=True, exist_ok=True)
-
-          only_month = "202406"
-          date_re = re.compile(r"(\d{8})")
-
-          def yyyymmdd_from_name(name: str):
-              m = date_re.search(name)
-              return m.group(1) if m else None
-
-          def load_json(path: Path):
-              with open(path, "r", encoding="utf-8") as f:
-                  return json.load(f)
-
-          def flatten_meta(meta: dict):
-              out = {}
-              for k, v in meta.items():
-                  if isinstance(v, (str, int, float, bool)) or v is None:
-                      out["meta_" + k] = v
-              return out
-
-          meta_files = sorted(BRONZE.rglob("*.meta.json"))
-          data_files = sorted(BRONZE.rglob("*.csv.gz"))
-
-          meta_by_day = {}
-          for p in meta_files:
-              day = yyyymmdd_from_name(p.name)
-              if day and day.startswith(only_month):
-                  meta_by_day[day] = load_json(p)
-
-          data_by_day = {}
-          for p in data_files:
-              day = yyyymmdd_from_name(p.name)
-              if day and day.startswith(only_month):
-                  data_by_day[day] = p
-
-          common_days = sorted(set(meta_by_day.keys()) & set(data_by_day.keys()))
-          print("month:", only_month, "days:", len(common_days))
-          if not common_days:
-              raise SystemExit("No days found for month")
-
-          frames = []
-          for day in common_days:
-              csv_path = data_by_day[day]
-              meta = meta_by_day.get(day, {})
-              df = pd.read_csv(csv_path, compression="gzip")
-              df.columns = [str(c).lower().strip() for c in df.columns]
-              df["ref_day"] = day
-              df["__source_path"] = str(csv_path)
-              flat = flatten_meta(meta)
-              for k, v in flat.items():
-                  df[k] = v
-              frames.append(df)
-
-          out = pd.concat(frames, ignore_index=True)
-          year = only_month[:4]
-          out_path = (SILVER / year / f"{only_month}.parquet").resolve()
-          out_path.parent.mkdir(parents=True, exist_ok=True)
-          out.to_parquet(out_path, index=False)
-          print("written:", out_path, "rows:", len(out))
-          PY
-
-      - name: Silver days to silver trains (202406)
-        run: |
-          python - <<'PY'
-          import ast
-          import pandas as pd
-          from pathlib import Path
-
-          ROOT = Path(".").resolve()
-          SILVER_DAYS = ROOT / "data" / "silver"
-          SILVER_TRAINS = ROOT / "data" / "silver_trains"
-          SILVER_TRAINS.mkdir(parents=True, exist_ok=True)
-
-          only_month = "202406"
-          year = only_month[:4]
-          in_path = (SILVER_DAYS / year / f"{only_month}.parquet").resolve()
-          if not in_path.exists():
-              raise SystemExit(f"Missing {in_path}")
-
-          df = pd.read_parquet(in_path)
-          if "treni" not in df.columns:
-              raise SystemExit("Missing column treni in silver days parquet")
-
-          def parse_treni_cell(x):
-              if x is None or not isinstance(x, str):
-                  return []
-              s = x.strip()
-              if not s:
-                  return []
-              try:
-                  obj = ast.literal_eval(s)
-              except Exception:
-                  return []
-              return obj if isinstance(obj, list) else []
-
-          def normalize_fr(fr):
-              if not isinstance(fr, list):
-                  return []
-              out = []
-              for stop in fr:
-                  if not isinstance(stop, dict):
-                      continue
-                  out.append({
-                      "n": stop.get("n"),
-                      "oa": stop.get("oa"),
-                      "op": stop.get("op"),
-                      "ra": stop.get("ra"),
-                      "rp": stop.get("rp"),
-                  })
-              return out
-
-          frames = []
-          skipped = 0
-          for _, row in df.iterrows():
-              treni_list = parse_treni_cell(row["treni"])
-              if not treni_list:
-                  skipped += 1
-                  continue
-
-              tdf = pd.json_normalize(treni_list)
-
-              if "fr" in tdf.columns:
-                  tdf["fr"] = tdf["fr"].apply(normalize_fr)
-              else:
-                  tdf["fr"] = [[] for _ in range(len(tdf))]
-
-              tdf["ref_day"] = row.get("ref_day")
-              tdf["giorno"] = row.get("giorno")
-              tdf["timezone"] = row.get("timezone")
-
-              for c in df.columns:
-                  if str(c).startswith("meta_"):
-                      tdf[c] = row.get(c)
-
-              frames.append(tdf)
-
-          out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-          out_dir = (SILVER_TRAINS / year).resolve()
-          out_dir.mkdir(parents=True, exist_ok=True)
-          out_path = (out_dir / f"{only_month}.parquet").resolve()
-          out.to_parquet(out_path, index=False)
-          print("written:", out_path, "rows:", len(out), "skipped_days:", skipped)
-          PY
-
-      - name: Build KPI + stazioni + OD + hist and merge into docs/data
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import duckdb
-          import pandas as pd
           import re
+          from pathlib import Path
 
-          ROOT = Path(".").resolve()
-          DOCS = ROOT / "docs" / "data"
-          DOCS.mkdir(parents=True, exist_ok=True)
+          metas = sorted(Path("data/bronze").rglob("*.meta.json"))
+          if not metas:
+            raise SystemExit("No bronze meta files found in data/bronze")
 
-          only_month = "202406"
-          year = only_month[:4]
-          trains_path = (ROOT / "data" / "silver_trains" / year / f"{only_month}.parquet").resolve()
-          if not trains_path.exists():
-              raise SystemExit(f"Missing {trains_path}")
+          days = []
+          for p in metas:
+            m = re.search(r"(\d{8})\.meta\.json$", p.name)
+            if m:
+              days.append(m.group(1))
 
-          def align_to_existing_schema(target: Path, df: pd.DataFrame):
-              if not target.exists():
-                  return df
-              cols = pd.read_csv(target, nrows=0).columns.tolist()
-              df = df.copy()
-              for c in cols:
-                  if c not in df.columns:
-                      df[c] = pd.NA
-              return df[cols]
+          if not days:
+            raise SystemExit("No YYYYMMDD dates found in bronze meta filenames")
 
-          def _norm_key(series: pd.Series, name: str) -> pd.Series:
-              s = series.copy()
-              if name == "mese":
-                  ss = s.dropna().astype(str)
-                  if len(ss) > 0 and ss.map(lambda x: bool(re.match(r"^\d{4}-\d{2}$", x))).all():
-                      return s.astype(str)
-                  dt = pd.to_datetime(s, errors="coerce")
-                  if dt.notna().any():
-                      out = dt.dt.date.astype(str)
-                      return out.where(dt.notna(), s.astype(str))
-                  return s.astype(str)
-              if name == "giorno":
-                  dt = pd.to_datetime(s, errors="coerce")
-                  if dt.notna().any():
-                      out = dt.dt.date.astype(str)
-                      return out.where(dt.notna(), s.astype(str))
-                  return s.astype(str)
-              return s.astype(str)
+          days = sorted(set(days))
+          start = f"{days[0][:4]}-{days[0][4:6]}-{days[0][6:8]}"
+          end = f"{days[-1][:4]}-{days[-1][4:6]}-{days[-1][6:8]}"
+          months = sorted({d[:6] for d in days})
 
-          def merge_csv_safe(path: Path, new_df: pd.DataFrame, key_cols):
-              new_df = new_df.copy()
-              for k in key_cols:
-                  if k not in new_df.columns:
-                      raise KeyError(f"merge_csv: missing key col {k} for {path.name}. have={list(new_df.columns)[:180]}")
+          print(f"bronze days: {len(days)}")
+          print(f"start={start}")
+          print(f"end={end}")
+          print(f"months={','.join(months)}")
 
-              if path.exists():
-                  old = pd.read_csv(path)
-
-                  for c in old.columns:
-                      if c not in new_df.columns:
-                          new_df[c] = pd.NA
-                  new_df = new_df[old.columns]
-
-                  for k in key_cols:
-                      old[k] = _norm_key(old[k], k)
-                      new_df[k] = _norm_key(new_df[k], k)
-
-                  old = old.drop_duplicates(subset=key_cols, keep="last")
-                  new_df = new_df.drop_duplicates(subset=key_cols, keep="last")
-
-                  merged = old.merge(new_df, on=key_cols, how="outer", suffixes=("", "__new"))
-
-                  base_cols = list(old.columns)
-                  for c in base_cols:
-                      if c in key_cols:
-                          continue
-                      cn = c + "__new"
-                      if cn in merged.columns:
-                          merged[c] = merged[cn].combine_first(merged[c])
-                          merged = merged.drop(columns=[cn])
-
-                  leftovers = [c for c in merged.columns if c.endswith("__new")]
-                  for cn in leftovers:
-                      c = cn[:-5]
-                      merged[c] = merged[cn]
-                      merged = merged.drop(columns=[cn])
-
-                  out = merged
-              else:
-                  out = new_df.drop_duplicates(subset=key_cols, keep="last")
-                  for k in key_cols:
-                      out[k] = _norm_key(out[k], k)
-
-              try:
-                  out = out.sort_values(key_cols)
-              except Exception:
-                  pass
-              out.to_csv(path, index=False)
-
-          def build_station_code_map(stazioni_path: Path):
-              if not stazioni_path.exists():
-                  return {}
-              old = pd.read_csv(stazioni_path, dtype=str)
-              if "nome_stazione" in old.columns and "cod_stazione" in old.columns:
-                  sub = old[["nome_stazione", "cod_stazione"]].dropna().drop_duplicates()
-                  return dict(zip(sub["nome_stazione"], sub["cod_stazione"]))
-              return {}
-
-          def build_od_code_maps(od_path: Path):
-              if not od_path.exists():
-                  return {}, {}
-              old = pd.read_csv(od_path, dtype=str)
-              mp, ma = {}, {}
-              if "nome_partenza" in old.columns and "cod_partenza" in old.columns:
-                  sub = old[["nome_partenza", "cod_partenza"]].dropna().drop_duplicates()
-                  mp = dict(zip(sub["nome_partenza"], sub["cod_partenza"]))
-              if "nome_arrivo" in old.columns and "cod_arrivo" in old.columns:
-                  sub = old[["nome_arrivo", "cod_arrivo"]].dropna().drop_duplicates()
-                  ma = dict(zip(sub["nome_arrivo"], sub["cod_arrivo"]))
-              return mp, ma
-
-          con = duckdb.connect()
-          con.execute("PRAGMA threads=4")
-          con.execute("DROP VIEW IF EXISTS trains_all")
-          con.execute(f"CREATE VIEW trains_all AS SELECT * FROM read_parquet('{trains_path.as_posix()}')")
-
-          con.execute("DROP TABLE IF EXISTS trains_clean")
-          con.execute("""
-          CREATE TABLE trains_clean AS
-          SELECT
-            strptime(ref_day, '%Y%m%d')::DATE AS giorno,
-            date_trunc('month', strptime(ref_day, '%Y%m%d')::DATE)::DATE AS mese,
-            COALESCE(CAST(c AS VARCHAR), 'UNK') AS categoria,
-            COALESCE(CAST(n AS VARCHAR), CAST(_id AS VARCHAR), 'UNK') AS numero_treno,
-            COALESCE(CAST(p AS VARCHAR), 'UNK') AS origine,
-            COALESCE(CAST(a AS VARCHAR), 'UNK') AS destinazione,
-            CASE
-              WHEN ra IS NULL THEN NULL
-              WHEN lower(trim(CAST(ra AS VARCHAR))) IN ('n','n.d.','nd','') THEN NULL
-              ELSE TRY_CAST(ra AS DOUBLE)
-            END AS ra_min,
-            fr
-          FROM trains_all
-          """)
-
-          con.execute("DROP TABLE IF EXISTS stops_clean")
-          con.execute("""
-          CREATE TABLE stops_clean AS
-          WITH base AS (
-            SELECT
-              giorno,
-              mese,
-              categoria,
-              numero_treno,
-              fr,
-              array_length(fr) AS max_idx
-            FROM trains_clean
-            WHERE fr IS NOT NULL AND array_length(fr) > 0
-          ),
-          idxs AS (
-            SELECT
-              giorno,
-              mese,
-              categoria,
-              numero_treno,
-              max_idx,
-              UNNEST(range(1, max_idx + 1)) AS idx
-            FROM base
-          ),
-          s AS (
-            SELECT
-              base.giorno,
-              base.mese,
-              base.categoria,
-              base.numero_treno,
-              idxs.idx,
-              base.max_idx,
-              list_extract(base.fr, idxs.idx) AS stop
-            FROM base
-            JOIN idxs
-              ON base.giorno = idxs.giorno
-             AND base.mese = idxs.mese
-             AND base.categoria = idxs.categoria
-             AND base.numero_treno = idxs.numero_treno
-             AND base.max_idx = idxs.max_idx
-          )
-          SELECT
-            giorno,
-            mese,
-            categoria,
-            numero_treno,
-            CAST(stop.n AS VARCHAR) AS nome_stazione,
-            CAST(stop.n AS VARCHAR) AS cod_stazione_grezzo,
-            CASE
-              WHEN idx = 1 THEN 'PARTENZA'
-              WHEN idx = max_idx THEN 'ARRIVO'
-              ELSE 'TRANSITO'
-            END AS ruolo,
-            CASE
-              WHEN stop.ra IS NULL THEN NULL
-              WHEN lower(trim(CAST(stop.ra AS VARCHAR))) IN ('n','n.d.','nd','') THEN NULL
-              ELSE TRY_CAST(stop.ra AS DOUBLE)
-            END AS ra_min
-          FROM s
-          WHERE stop.n IS NOT NULL
-          """)
-
-          kpi_giorno = con.execute("""
-          SELECT
-            giorno,
-            COUNT(*) AS corse_osservate,
-            COUNT(ra_min) AS effettuate,
-            SUM(CASE WHEN ra_min IS NULL THEN 1 ELSE 0 END) AS cancellate,
-            0 AS soppresse,
-            0 AS parzialmente_cancellate,
-            SUM(CASE WHEN ra_min IS NULL THEN 1 ELSE 0 END) AS info_mancante,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min = 0 THEN 1 ELSE 0 END) AS in_orario,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min > 0 THEN 1 ELSE 0 END) AS in_ritardo,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min < 0 THEN 1 ELSE 0 END) AS in_anticipo,
-            SUM(CASE WHEN ra_min > 5 THEN 1 ELSE 0 END) AS oltre_5,
-            SUM(CASE WHEN ra_min > 10 THEN 1 ELSE 0 END) AS oltre_10,
-            SUM(CASE WHEN ra_min > 15 THEN 1 ELSE 0 END) AS oltre_15,
-            SUM(CASE WHEN ra_min > 30 THEN 1 ELSE 0 END) AS oltre_30,
-            SUM(CASE WHEN ra_min > 60 THEN 1 ELSE 0 END) AS oltre_60,
-            SUM(CASE WHEN ra_min > 0 THEN ra_min ELSE 0 END) AS minuti_ritardo_tot,
-            SUM(CASE WHEN ra_min < 0 THEN -ra_min ELSE 0 END) AS minuti_anticipo_tot,
-            SUM(COALESCE(ra_min, 0)) AS minuti_netti_tot,
-            AVG(ra_min) AS ritardo_medio,
-            quantile_cont(ra_min, 0.5) AS ritardo_mediano,
-            quantile_cont(ra_min, 0.9) AS p90,
-            quantile_cont(ra_min, 0.95) AS p95
-          FROM trains_clean
-          GROUP BY 1
-          ORDER BY 1
-          """).fetchdf()
-
-          kpi_mese = con.execute("""
-          SELECT
-            mese,
-            COUNT(*) AS corse_osservate,
-            COUNT(ra_min) AS effettuate,
-            SUM(CASE WHEN ra_min IS NULL THEN 1 ELSE 0 END) AS cancellate,
-            0 AS soppresse,
-            0 AS parzialmente_cancellate,
-            SUM(CASE WHEN ra_min IS NULL THEN 1 ELSE 0 END) AS info_mancante,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min = 0 THEN 1 ELSE 0 END) AS in_orario,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min > 0 THEN 1 ELSE 0 END) AS in_ritardo,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min < 0 THEN 1 ELSE 0 END) AS in_anticipo,
-            SUM(CASE WHEN ra_min > 5 THEN 1 ELSE 0 END) AS oltre_5,
-            SUM(CASE WHEN ra_min > 10 THEN 1 ELSE 0 END) AS oltre_10,
-            SUM(CASE WHEN ra_min > 15 THEN 1 ELSE 0 END) AS oltre_15,
-            SUM(CASE WHEN ra_min > 30 THEN 1 ELSE 0 END) AS oltre_30,
-            SUM(CASE WHEN ra_min > 60 THEN 1 ELSE 0 END) AS oltre_60,
-            SUM(CASE WHEN ra_min > 0 THEN ra_min ELSE 0 END) AS minuti_ritardo_tot,
-            SUM(CASE WHEN ra_min < 0 THEN -ra_min ELSE 0 END) AS minuti_anticipo_tot,
-            SUM(COALESCE(ra_min, 0)) AS minuti_netti_tot,
-            AVG(ra_min) AS ritardo_medio,
-            quantile_cont(ra_min, 0.5) AS ritardo_mediano,
-            quantile_cont(ra_min, 0.9) AS p90,
-            quantile_cont(ra_min, 0.95) AS p95
-          FROM trains_clean
-          GROUP BY 1
-          ORDER BY 1
-          """).fetchdf()
-
-          kpi_giorno_cat = con.execute("""
-          SELECT
-            giorno,
-            categoria,
-            COUNT(*) AS corse_osservate,
-            COUNT(ra_min) AS effettuate,
-            SUM(CASE WHEN ra_min IS NULL THEN 1 ELSE 0 END) AS cancellate,
-            0 AS soppresse,
-            0 AS parzialmente_cancellate,
-            SUM(CASE WHEN ra_min IS NULL THEN 1 ELSE 0 END) AS info_mancante,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min = 0 THEN 1 ELSE 0 END) AS in_orario,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min > 0 THEN 1 ELSE 0 END) AS in_ritardo,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min < 0 THEN 1 ELSE 0 END) AS in_anticipo,
-            SUM(CASE WHEN ra_min > 5 THEN 1 ELSE 0 END) AS oltre_5,
-            SUM(CASE WHEN ra_min > 10 THEN 1 ELSE 0 END) AS oltre_10,
-            SUM(CASE WHEN ra_min > 15 THEN 1 ELSE 0 END) AS oltre_15,
-            SUM(CASE WHEN ra_min > 30 THEN 1 ELSE 0 END) AS oltre_30,
-            SUM(CASE WHEN ra_min > 60 THEN 1 ELSE 0 END) AS oltre_60,
-            SUM(CASE WHEN ra_min > 0 THEN ra_min ELSE 0 END) AS minuti_ritardo_tot,
-            SUM(CASE WHEN ra_min < 0 THEN -ra_min ELSE 0 END) AS minuti_anticipo_tot,
-            SUM(COALESCE(ra_min, 0)) AS minuti_netti_tot,
-            AVG(ra_min) AS ritardo_medio,
-            quantile_cont(ra_min, 0.5) AS ritardo_mediano,
-            quantile_cont(ra_min, 0.9) AS p90,
-            quantile_cont(ra_min, 0.95) AS p95
-          FROM trains_clean
-          GROUP BY 1,2
-          ORDER BY 1,2
-          """).fetchdf()
-
-          kpi_mese_cat = con.execute("""
-          SELECT
-            mese,
-            categoria,
-            COUNT(*) AS corse_osservate,
-            COUNT(ra_min) AS effettuate,
-            SUM(CASE WHEN ra_min IS NULL THEN 1 ELSE 0 END) AS cancellate,
-            0 AS soppresse,
-            0 AS parzialmente_cancellate,
-            SUM(CASE WHEN ra_min IS NULL THEN 1 ELSE 0 END) AS info_mancante,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min = 0 THEN 1 ELSE 0 END) AS in_orario,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min > 0 THEN 1 ELSE 0 END) AS in_ritardo,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min < 0 THEN 1 ELSE 0 END) AS in_anticipo,
-            SUM(CASE WHEN ra_min > 5 THEN 1 ELSE 0 END) AS oltre_5,
-            SUM(CASE WHEN ra_min > 10 THEN 1 ELSE 0 END) AS oltre_10,
-            SUM(CASE WHEN ra_min > 15 THEN 1 ELSE 0 END) AS oltre_15,
-            SUM(CASE WHEN ra_min > 30 THEN 1 ELSE 0 END) AS oltre_30,
-            SUM(CASE WHEN ra_min > 60 THEN 1 ELSE 0 END) AS oltre_60,
-            SUM(CASE WHEN ra_min > 0 THEN ra_min ELSE 0 END) AS minuti_ritardo_tot,
-            SUM(CASE WHEN ra_min < 0 THEN -ra_min ELSE 0 END) AS minuti_anticipo_tot,
-            SUM(COALESCE(ra_min, 0)) AS minuti_netti_tot,
-            AVG(ra_min) AS ritardo_medio,
-            quantile_cont(ra_min, 0.5) AS ritardo_mediano,
-            quantile_cont(ra_min, 0.9) AS p90,
-            quantile_cont(ra_min, 0.95) AS p95
-          FROM trains_clean
-          GROUP BY 1,2
-          ORDER BY 1,2
-          """).fetchdf()
-
-          st_nodo = con.execute("""
-          SELECT
-            mese,
-            categoria,
-            cod_stazione_grezzo,
-            any_value(nome_stazione) AS nome_stazione,
-            COUNT(*) AS corse_osservate,
-            COUNT(ra_min) AS effettuate,
-            SUM(CASE WHEN ra_min IS NULL THEN 1 ELSE 0 END) AS cancellate,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min = 0 THEN 1 ELSE 0 END) AS in_orario,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min > 0 THEN 1 ELSE 0 END) AS in_ritardo,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min < 0 THEN 1 ELSE 0 END) AS in_anticipo,
-            AVG(ra_min) AS ritardo_medio,
-            quantile_cont(ra_min, 0.5) AS ritardo_mediano,
-            quantile_cont(ra_min, 0.9) AS p90,
-            quantile_cont(ra_min, 0.95) AS p95
-          FROM stops_clean
-          GROUP BY 1,2,3
-          ORDER BY 1,2,3
-          """).fetchdf()
-
-          st_ruolo = con.execute("""
-          SELECT
-            mese,
-            categoria,
-            ruolo,
-            cod_stazione_grezzo,
-            any_value(nome_stazione) AS nome_stazione,
-            COUNT(*) AS corse_osservate,
-            COUNT(ra_min) AS effettuate,
-            SUM(CASE WHEN ra_min IS NULL THEN 1 ELSE 0 END) AS cancellate,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min = 0 THEN 1 ELSE 0 END) AS in_orario,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min > 0 THEN 1 ELSE 0 END) AS in_ritardo,
-            SUM(CASE WHEN ra_min IS NOT NULL AND ra_min < 0 THEN 1 ELSE 0 END) AS in_anticipo,
-            AVG(ra_min) AS ritardo_medio,
-            quantile_cont(ra_min, 0.5) AS ritardo_mediano,
-            quantile_cont(ra_min, 0.9) AS p90,
-            quantile_cont(ra_min, 0.95) AS p95
-          FROM stops_clean
-          GROUP BY 1,2,3,4
-          ORDER BY 1,2,3,4
-          """).fetchdf()
-
-          od = con.execute("""
-          SELECT
-            mese,
-            categoria,
-            origine AS nome_partenza,
-            destinazione AS nome_arrivo,
-            COUNT(*) AS corse_osservate,
-            COUNT(ra_min) AS effettuate,
-            AVG(ra_min) AS ritardo_medio,
-            quantile_cont(ra_min, 0.9) AS p90
-          FROM trains_clean
-          GROUP BY 1,2,3,4
-          ORDER BY 1,2,3,4
-          """).fetchdf()
-
-          hist = con.execute("""
-          WITH b AS (
-            SELECT
-              strftime(mese, '%Y-%m') AS mese,
-              categoria,
-              ra_min,
-              CASE
-                WHEN ra_min IS NULL THEN NULL
-                WHEN ra_min <= -30 THEN '(-60,-30]'
-                WHEN ra_min <= -15 THEN '(-30,-15]'
-                WHEN ra_min <= -10 THEN '(-15,-10]'
-                WHEN ra_min <= -5 THEN '(-10,-5]'
-                WHEN ra_min <= -1 THEN '(-5,-1]'
-                WHEN ra_min <= 0 THEN '(-1,0]'
-                WHEN ra_min <= 1 THEN '(0,1]'
-                WHEN ra_min <= 5 THEN '(1,5]'
-                WHEN ra_min <= 10 THEN '(5,10]'
-                WHEN ra_min <= 15 THEN '(10,15]'
-                WHEN ra_min <= 30 THEN '(15,30]'
-                WHEN ra_min <= 60 THEN '(30,60]'
-                WHEN ra_min <= 120 THEN '(60,120]'
-                ELSE '> 120'
-              END AS bucket_ritardo_arrivo
-            FROM trains_clean
-          )
-          SELECT
-            mese,
-            categoria,
-            bucket_ritardo_arrivo,
-            COUNT(*) AS count,
-            SUM(CASE WHEN ra_min > 0 THEN ra_min ELSE 0 END) AS minuti_ritardo,
-            SUM(CASE WHEN ra_min < 0 THEN -ra_min ELSE 0 END) AS minuti_anticipo
-          FROM b
-          WHERE bucket_ritardo_arrivo IS NOT NULL
-          GROUP BY 1,2,3
-          ORDER BY 1,2,3
-          """).fetchdf()
-
-          con.close()
-
-          st_nodo_path = DOCS / "stazioni_mese_categoria_nodo.csv"
-          st_ruolo_path = DOCS / "stazioni_mese_categoria_ruolo.csv"
-          od_path = DOCS / "od_mese_categoria.csv"
-          hist_path = DOCS / "hist_mese_categoria.csv"
-
-          code_map = build_station_code_map(st_nodo_path)
-          st_nodo = st_nodo.copy()
-          st_ruolo = st_ruolo.copy()
-          if code_map:
-              st_nodo["cod_stazione"] = st_nodo["nome_stazione"].astype(str).map(code_map).fillna(st_nodo["cod_stazione_grezzo"].astype(str))
-              st_ruolo["cod_stazione"] = st_ruolo["nome_stazione"].astype(str).map(code_map).fillna(st_ruolo["cod_stazione_grezzo"].astype(str))
-          else:
-              st_nodo["cod_stazione"] = st_nodo["cod_stazione_grezzo"].astype(str)
-              st_ruolo["cod_stazione"] = st_ruolo["cod_stazione_grezzo"].astype(str)
-          st_nodo = st_nodo.drop(columns=["cod_stazione_grezzo"], errors="ignore")
-          st_ruolo = st_ruolo.drop(columns=["cod_stazione_grezzo"], errors="ignore")
-
-          mp, ma = build_od_code_maps(od_path)
-          od = od.copy()
-          od["cod_partenza"] = od["nome_partenza"].astype(str).map(mp).fillna(od["nome_partenza"].astype(str))
-          od["cod_arrivo"] = od["nome_arrivo"].astype(str).map(ma).fillna(od["nome_arrivo"].astype(str))
-
-          merge_csv_safe(DOCS / "kpi_giorno.csv", align_to_existing_schema(DOCS / "kpi_giorno.csv", kpi_giorno), ["giorno"])
-          merge_csv_safe(DOCS / "kpi_mese.csv", align_to_existing_schema(DOCS / "kpi_mese.csv", kpi_mese), ["mese"])
-          merge_csv_safe(DOCS / "kpi_giorno_categoria.csv", align_to_existing_schema(DOCS / "kpi_giorno_categoria.csv", kpi_giorno_cat), ["giorno","categoria"])
-          merge_csv_safe(DOCS / "kpi_mese_categoria.csv", align_to_existing_schema(DOCS / "kpi_mese_categoria.csv", kpi_mese_cat), ["mese","categoria"])
-
-          merge_csv_safe(st_nodo_path, align_to_existing_schema(st_nodo_path, st_nodo), ["mese","categoria","cod_stazione"])
-          merge_csv_safe(st_ruolo_path, align_to_existing_schema(st_ruolo_path, st_ruolo), ["mese","categoria","ruolo","cod_stazione"])
-
-          merge_csv_safe(od_path, align_to_existing_schema(od_path, od), ["mese","categoria","cod_partenza","cod_arrivo"])
-
-          merge_csv_safe(hist_path, align_to_existing_schema(hist_path, hist), ["mese","categoria","bucket_ritardo_arrivo"])
-
-          (ROOT / "docs" / ".nojekyll").touch()
-          print("updated docs/data")
+          with open("$GITHUB_OUTPUT", "a", encoding="utf-8") as f:
+            f.write(f"start={start}\n")
+            f.write(f"end={end}\n")
+            f.write(f"months={' '.join(months)}\n")
           PY
 
-      - name: Commit and push published datasets
+      - name: Build silver from local bronze (full available range)
         run: |
+          python -m scripts.transform_silver \
+            --start "${{ steps.bronze_range.outputs.start }}" \
+            --end "${{ steps.bronze_range.outputs.end }}"
+
+      - name: Rebuild gold for all bronze months
+        run: |
+          python -m scripts.build_gold --months ${{ steps.bronze_range.outputs.months }}
+
+      - name: Build station dimension + site payload
+        run: |
+          python -m scripts.build_station_dim
+          python -m scripts.build_site
+
+      - name: Verify generated outputs
+        run: |
+          ls -lah data/gold
+          ls -lah docs/data
+
+      - name: Commit and push generated data
+        run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/data docs/.nojekyll
-          git commit -m "Backfill 2024-06 (KPI + stazioni + OD + hist) merge" || echo "No changes"
-          git push
+
+          git add data/gold docs/data docs/.nojekyll stations || true
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "One-shot backfill bronze to gold/docs"
+            git push
+          fi
