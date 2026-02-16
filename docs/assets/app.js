@@ -50,40 +50,89 @@ async function fetchJsonOrNull(path) {
   }
 }
 
-function parseCSV(text) {
-  const t = String(text || "").trim();
-  if (!t) return [];
-  const lines = t.split(/\r?\n/);
-  if (lines.length <= 1) return [];
-  const header = lines[0].split(",").map(x => String(x || "").trim());
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = String(lines[i] || "");
-    if (!line.trim()) continue;
-    const cols = splitCSVLine(line);
-    const obj = {};
-    for (let j = 0; j < header.length; j++) obj[header[j]] = cols[j] ?? "";
-    rows.push(obj);
+const DATA_BASE_CANDIDATES = ["data/", "docs/data/", "site/data/"];
+
+async function pickDataBase() {
+  const probes = ["kpi_mese.csv", "kpi_mese_categoria.csv", "kpi_giorno_categoria.csv", "manifest.json"];
+  for (const base of DATA_BASE_CANDIDATES) {
+    for (const p of probes) {
+      const t = await fetchTextOrNull(base + p);
+      if (t && String(t).trim().length > 20) return base;
+    }
   }
-  return rows;
+  return "data/";
 }
 
-function splitCSVLine(line) {
+function detectDelimiter(line) {
+  const s = String(line || "");
+  let comma = 0, semi = 0, tab = 0;
+  let inQ = false;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+
+    if (ch === '"') {
+      if (inQ && s[i + 1] === '"') { i++; }
+      else inQ = !inQ;
+      continue;
+    }
+
+    if (!inQ) {
+      if (ch === ",") comma++;
+      else if (ch === ";") semi++;
+      else if (ch === "\t") tab++;
+    }
+  }
+
+  if (semi > comma && semi >= tab) return ";";
+  if (tab > comma && tab > semi) return "\t";
+  return ",";
+}
+
+function splitCSVLine(line, delim) {
+  const d = delim || ",";
   const out = [];
   let cur = "";
   let inQ = false;
+
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
+
     if (ch === '"') {
       if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
       else inQ = !inQ;
       continue;
     }
-    if (ch === "," && !inQ) { out.push(cur); cur = ""; continue; }
+
+    if (ch === d && !inQ) { out.push(cur); cur = ""; continue; }
     cur += ch;
   }
+
   out.push(cur);
   return out;
+}
+
+function parseCSV(text) {
+  const t = String(text || "").trim();
+  if (!t) return [];
+
+  const lines = t.split(/\r?\n/).filter(x => String(x || "").length);
+  if (lines.length <= 1) return [];
+
+  const delim = detectDelimiter(lines[0]);
+  const header = splitCSVLine(lines[0], delim).map(x => String(x || "").trim());
+
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = String(lines[i] || "");
+    if (!line.trim()) continue;
+
+    const cols = splitCSVLine(line, delim);
+    const obj = {};
+    for (let j = 0; j < header.length; j++) obj[header[j]] = cols[j] ?? "";
+    rows.push(obj);
+  }
+  return rows;
 }
 
 function toNum(x) {
@@ -189,533 +238,11 @@ function ensureSearchInput(selectEl, inputId, placeholder, items) {
     selectEl.parentNode.insertBefore(input, selectEl);
   }
 
-  input.oninput = () => fillStationSelect(selectEl, items, input.value);
-}
-
-function safeSetData(table, data) {
-  if (!table || typeof table.setData !== "function") return;
-  try {
-    const p = table.setData(data);
-    if (p && typeof p.catch === "function") p.catch(() => {});
-  } catch {}
-}
-
-function isCapoluogoCity(cityName) {
-  if (!state.capoluoghiSet || state.capoluoghiSet.size === 0) return true;
-  return state.capoluoghiSet.has(normalizeText(cityName));
-}
-
-function hasDayFilter() {
-  return !!(state.filters.day_from || state.filters.day_to);
-}
-
-function passDay(row, keyField) {
-  const from = String(state.filters.day_from || "").trim();
-  const to = String(state.filters.day_to || "").trim();
-  if (!from && !to) return true;
-
-  const d = String(row[keyField] || "").slice(0, 10);
-  if (!d) return false;
-
-  const a = from || to;
-  const b = to || from;
-
-  const lo = a <= b ? a : b;
-  const hi = a <= b ? b : a;
-
-  return d >= lo && d <= hi;
-}
-
-function hasWeekdayFilter() {
-  const w = state.filters.weekdays;
-  if (!Array.isArray(w) || w.length !== 7) return false;
-  return w.some(v => !v);
-}
-
-function weekdayIndexFromISO(isoDay) {
-  const d = String(isoDay || "").slice(0, 10);
-  if (!d) return null;
-  const dt = new Date(d + "T00:00:00Z");
-  if (isNaN(dt.getTime())) return null;
-  const u = dt.getUTCDay(); // 0=dom, 1=lun, ... 6=sab
-  return (u + 6) % 7; // 0=lun ... 6=dom
-}
-
-function passWeekdayISO(isoDay) {
-  if (!hasWeekdayFilter()) return true;
-  const idx = weekdayIndexFromISO(isoDay);
-  if (idx === null) return false;
-  const w = state.filters.weekdays;
-  return !!w[idx];
-}
-
-function passWeekday(row, keyField) {
-  const d = String(row[keyField] || "").slice(0, 10);
-  return passWeekdayISO(d);
-}
-
-function hasTimeFilter() {
-  return state.filters.time_all === false;
-}
-
-function parseTimeToMinutes(t) {
-  const s = String(t || "").trim();
-  const m = /^([0-9]{1,2}):([0-9]{2})$/.exec(s);
-  if (!m) return null;
-  const hh = Math.max(0, Math.min(23, parseInt(m[1], 10)));
-  const mm = Math.max(0, Math.min(59, parseInt(m[2], 10)));
-  return hh * 60 + mm;
-}
-
-function passHour(row, hourField) {
-  if (!hasTimeFilter()) return true;
-  const h = toNum(row[hourField]);
-  if (!isFinite(h)) return false;
-
-  const fromM0 = parseTimeToMinutes(state.filters.time_from || "00:00");
-  const toM0 = parseTimeToMinutes(state.filters.time_to || "23:59");
-  const fromM = fromM0 === null ? 0 : fromM0;
-  const toM = toM0 === null ? (23 * 60 + 59) : toM0;
-
-  const lo = Math.min(fromM, toM);
-  const hi = Math.max(fromM, toM);
-
-  const start = h * 60;
-  const end = h * 60 + 59;
-  return end >= lo && start <= hi;
-}
-
-function groupKpiHourToDay(hourRows) {
-  const keys = [
-    "corse_osservate","effettuate","cancellate","soppresse","parzialmente_cancellate","info_mancante",
-    "in_orario","in_ritardo","in_anticipo",
-    "oltre_5","oltre_10","oltre_15","oltre_30","oltre_60",
-    "minuti_ritardo_tot","minuti_anticipo_tot","minuti_netti_tot"
-  ];
-
-  const by = new Map();
-
-  for (const r of hourRows) {
-    const g = String(r.giorno || "").slice(0, 10);
-    const c = String(r.categoria || "").trim() || "all";
-    if (!g) continue;
-    const k = g + "|" + c;
-    if (!by.has(k)) {
-      const base = { giorno: g, categoria: c };
-      keys.forEach(x => base[x] = 0);
-      by.set(k, base);
-    }
-    const a = by.get(k);
-    keys.forEach(x => a[x] += toNum(r[x]));
-  }
-
-  const out = Array.from(by.values());
-  out.sort((a, b) => String(a.giorno).localeCompare(String(b.giorno)) || String(a.categoria).localeCompare(String(b.categoria)));
-  return out;
-}
-
-function getKpiDailyRowsFiltered() {
-  let rows = [];
-
-  if (hasTimeFilter() && Array.isArray(state.kpiDayHourCat) && state.kpiDayHourCat.length > 0) {
-    rows = state.kpiDayHourCat;
-    if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, "giorno"));
-    if (state.filters.cat !== "all") rows = rows.filter(passCat);
-    if (hasDayFilter()) rows = rows.filter(r => passDay(r, "giorno"));
-    if (hasWeekdayFilter()) rows = rows.filter(r => passWeekday(r, "giorno"));
-    rows = rows.filter(r => passHour(r, "ora"));
-    return groupKpiHourToDay(rows);
-  }
-
-  rows = state.kpiDayCat;
-
-  if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, "giorno"));
-  if (state.filters.cat !== "all") rows = rows.filter(passCat);
-  if (hasDayFilter()) rows = rows.filter(r => passDay(r, "giorno"));
-  if (hasWeekdayFilter()) rows = rows.filter(r => passWeekday(r, "giorno"));
-
-  return rows;
-}
-
-function getKpiMonthlyRowsFiltered() {
-  const needDaily = hasDayFilter() || hasWeekdayFilter() || hasTimeFilter();
-  if (!needDaily) {
-    let m = state.kpiMonthCat;
-    if (state.filters.year !== "all") m = m.filter(r => passYear(r, "mese"));
-    if (state.filters.cat !== "all") m = m.filter(passCat);
-    return m;
-  }
-
-  const daily = getKpiDailyRowsFiltered();
-  return groupDailyToMonthly(daily);
-}
-
-function getHistRowsFiltered() {
-  if (state.filters.dep !== "all" || state.filters.arr !== "all") return [];
-
-  if (hasTimeFilter() && Array.isArray(state.histDayHourCat) && state.histDayHourCat.length > 0) {
-    let rows = state.histDayHourCat;
-    if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, "giorno"));
-    if (state.filters.cat !== "all") rows = rows.filter(passCat);
-    if (hasDayFilter()) rows = rows.filter(r => passDay(r, "giorno"));
-    if (hasWeekdayFilter()) rows = rows.filter(r => passWeekday(r, "giorno"));
-    rows = rows.filter(r => passHour(r, "ora"));
-    return rows;
-  }
-
-  const needDaily = (hasDayFilter() || hasWeekdayFilter()) && Array.isArray(state.histDayCat) && state.histDayCat.length > 0;
-  if (needDaily) {
-    let rows = state.histDayCat;
-    if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, "giorno"));
-    if (state.filters.cat !== "all") rows = rows.filter(passCat);
-    if (hasDayFilter()) rows = rows.filter(r => passDay(r, "giorno"));
-    if (hasWeekdayFilter()) rows = rows.filter(r => passWeekday(r, "giorno"));
-    return rows;
-  }
-
-  let rows = state.histMonthCat;
-  if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, "mese"));
-  if (state.filters.cat !== "all") rows = rows.filter(passCat);
-
-  if (hasDayFilter()) rows = rows.filter(r => passMonthFromDayRange(r, "mese"));
-
-  return rows;
-}
-
-
-function passMonthFromDayRange(row, keyField) {
-  if (!hasDayFilter()) return true;
-
-  const from = String(state.filters.day_from || "").trim();
-  const to = String(state.filters.day_to || "").trim();
-  const a = from || to;
-  const b = to || from;
-
-  const lo = (a <= b ? a : b).slice(0, 7);
-  const hi = (a <= b ? b : a).slice(0, 7);
-
-  const m = String(row[keyField] || "").slice(0, 7);
-  if (!m) return false;
-
-  return m >= lo && m <= hi;
-}
-
-function ensureHistToggleStyles() {
-  if (document.getElementById("histToggleStyles")) return;
-
-  const style = document.createElement("style");
-  style.id = "histToggleStyles";
-  style.textContent = `
-    .histToggleWrap { display:flex; align-items:center; gap:10px; margin:0 0 8px 0; }
-    .histModeText { font-size:13px; color:#e6e9f2; opacity:0.65; user-select:none; }
-    .histModeText.active { opacity:1; font-weight:600; }
-    .histSwitch { position:relative; display:inline-block; width:44px; height:24px; }
-    .histSwitch input { opacity:0; width:0; height:0; }
-    .histSlider { position:absolute; cursor:pointer; inset:0; background:rgba(255,255,255,0.22); transition:0.18s; border-radius:24px; }
-    .histSlider:before { position:absolute; content:""; height:18px; width:18px; left:3px; top:3px; background:#ffffff; transition:0.18s; border-radius:50%; }
-    .histSwitch input:checked + .histSlider { background:rgba(255,255,255,0.38); }
-    .histSwitch input:checked + .histSlider:before { transform: translateX(20px); }
-  `;
-  document.head.appendChild(style);
-}
-
-function updateHistToggleUI() {
-  const t = document.getElementById("histModeToggle");
-  const left = document.getElementById("histModeTextCount");
-  const right = document.getElementById("histModeTextPct");
-  if (!t || !left || !right) return;
-
-  const pct = !!t.checked;
-  if (pct) {
-    left.classList.remove("active");
-    right.classList.add("active");
-  } else {
-    left.classList.add("active");
-    right.classList.remove("active");
-  }
-}
-
-function initHistModeToggle() {
-  const chart = document.getElementById("chartHist");
-  if (!chart) return;
-
-  ensureHistToggleStyles();
-
-  let t = document.getElementById("histModeToggle");
-  if (t) {
-    updateHistToggleUI();
-    t.onchange = () => { updateHistToggleUI(); renderHist(); };
-    return;
-  }
-
-  const wrap = document.createElement("div");
-  wrap.className = "histToggleWrap";
-
-  const left = document.createElement("span");
-  left.id = "histModeTextCount";
-  left.className = "histModeText active";
-  left.innerText = "Conteggi";
-
-  const right = document.createElement("span");
-  right.id = "histModeTextPct";
-  right.className = "histModeText";
-  right.innerText = "%";
-
-  const sw = document.createElement("label");
-  sw.className = "histSwitch";
-
-  t = document.createElement("input");
-  t.id = "histModeToggle";
-  t.type = "checkbox";
-  t.checked = false;
-
-  const slider = document.createElement("span");
-  slider.className = "histSlider";
-
-  sw.appendChild(t);
-  sw.appendChild(slider);
-
-  wrap.appendChild(left);
-  wrap.appendChild(sw);
-  wrap.appendChild(right);
-
-  const parent = chart.parentNode;
-  if (parent) parent.insertBefore(wrap, chart);
-
-  t.onchange = () => { updateHistToggleUI(); renderHist(); };
-}
-
-function initDayControls() {
-  const yearSel = document.getElementById("yearSel");
-  if (!yearSel || !yearSel.parentNode) return;
-
-  if (document.getElementById("dayFrom")) return;
-
-  const days = uniq(state.kpiDayCat.map(r => String(r.giorno || "").slice(0, 10)).filter(Boolean)).sort();
-  const minDay = days.length ? days[0] : "";
-  const maxDay = days.length ? days[days.length - 1] : "";
-
-  const wrap = document.createElement("div");
-  wrap.style.display = "flex";
-  wrap.style.alignItems = "center";
-  wrap.style.gap = "10px";
-  wrap.style.margin = "6px 0 0 0";
-  wrap.style.flexWrap = "wrap";
-
-  const lab = document.createElement("div");
-  lab.innerText = "Giorno";
-
-  const from = document.createElement("input");
-  from.type = "date";
-  from.id = "dayFrom";
-  if (minDay) from.min = minDay;
-  if (maxDay) from.max = maxDay;
-  from.value = "";
-
-  const to = document.createElement("input");
-  to.type = "date";
-  to.id = "dayTo";
-  if (minDay) to.min = minDay;
-  if (maxDay) to.max = maxDay;
-  to.value = "";
-
-  const wdLab = document.createElement("div");
-  wdLab.innerText = "Giorni";
-
-  const wdWrap = document.createElement("div");
-  wdWrap.id = "weekdayWrap";
-  wdWrap.style.display = "flex";
-  wdWrap.style.alignItems = "center";
-  wdWrap.style.gap = "6px";
-
-  const wdLabels = ["Lu","Ma","Me","Gi","Ve","Sa","Do"];
-  const ensureWeekdays = () => {
-    if (!Array.isArray(state.filters.weekdays) || state.filters.weekdays.length !== 7) {
-      state.filters.weekdays = [true,true,true,true,true,true,true];
-    }
-  };
-  ensureWeekdays();
-
-  const refreshWdStyles = () => {
-    const btns = wdWrap.querySelectorAll("button[data-wd]");
-    btns.forEach(b => {
-      const idx = parseInt(String(b.dataset.wd || "0"), 10);
-      const on = !!state.filters.weekdays[idx];
-      b.style.opacity = on ? "1" : "0.35";
-      b.style.borderColor = on ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.35)";
-    });
-  };
-
-  wdLabels.forEach((t, i) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.dataset.wd = String(i);
-    b.innerText = t;
-    b.style.width = "28px";
-    b.style.height = "28px";
-    b.style.borderRadius = "999px";
-    b.style.border = "1px solid rgba(255,255,255,0.85)";
-    b.style.background = "transparent";
-    b.style.color = "inherit";
-    b.style.cursor = "pointer";
-    b.style.display = "inline-flex";
-    b.style.alignItems = "center";
-    b.style.justifyContent = "center";
-    b.style.padding = "0";
-    b.onclick = () => {
-      ensureWeekdays();
-      state.filters.weekdays[i] = !state.filters.weekdays[i];
-      refreshWdStyles();
-      updateDayNote();
-      renderAll();
-    };
-    wdWrap.appendChild(b);
-  });
-
-  refreshWdStyles();
-
-  const timeLab = document.createElement("div");
-  timeLab.innerText = "Orario";
-
-  const timeAllWrap = document.createElement("label");
-  timeAllWrap.style.display = "inline-flex";
-  timeAllWrap.style.alignItems = "center";
-  timeAllWrap.style.gap = "6px";
-  timeAllWrap.style.cursor = "pointer";
-
-  const timeAll = document.createElement("input");
-  timeAll.type = "checkbox";
-  timeAll.id = "timeAll";
-  timeAll.checked = state.filters.time_all !== false;
-
-  const timeAllTxt = document.createElement("span");
-  timeAllTxt.innerText = "Tutta la giornata";
-
-  timeAllWrap.appendChild(timeAll);
-  timeAllWrap.appendChild(timeAllTxt);
-
-  const timeFrom = document.createElement("input");
-  timeFrom.type = "time";
-  timeFrom.id = "timeFrom";
-  timeFrom.step = "60";
-  timeFrom.value = state.filters.time_from || "00:00";
-
-  const timeTo = document.createElement("input");
-  timeTo.type = "time";
-  timeTo.id = "timeTo";
-  timeTo.step = "60";
-  timeTo.value = state.filters.time_to || "23:59";
-
-  const syncTimeDisabled = () => {
-    const allDay = timeAll.checked;
-    timeFrom.disabled = allDay;
-    timeTo.disabled = allDay;
-  };
-  syncTimeDisabled();
-
-  const note = document.createElement("div");
-  note.id = "dayNote";
-  note.style.fontSize = "12px";
-  note.style.opacity = "0.75";
-  note.style.marginLeft = "6px";
-
-  wrap.appendChild(lab);
-  wrap.appendChild(from);
-  wrap.appendChild(to);
-  wrap.appendChild(wdLab);
-  wrap.appendChild(wdWrap);
-  wrap.appendChild(timeLab);
-  wrap.appendChild(timeAllWrap);
-  wrap.appendChild(timeFrom);
-  wrap.appendChild(timeTo);
-  wrap.appendChild(note);
-
-  yearSel.parentNode.appendChild(wrap);
-
-  const apply = () => {
-    state.filters.day_from = String(from.value || "").trim();
-    state.filters.day_to = String(to.value || "").trim();
-
-    ensureWeekdays();
-
-    state.filters.time_all = !!timeAll.checked;
-    state.filters.time_from = String(timeFrom.value || "00:00");
-    state.filters.time_to = String(timeTo.value || "23:59");
-
-    syncTimeDisabled();
-    refreshWdStyles();
-    updateDayNote();
-    renderAll();
-  };
-
-  from.onchange = apply;
-  to.onchange = apply;
-  timeAll.onchange = apply;
-  timeFrom.onchange = apply;
-  timeTo.onchange = apply;
-
-  updateDayNote();
-}
-
-function updateDayNote() {
-  const el = document.getElementById("dayNote");
-  if (!el) return;
-
-  const any = hasDayFilter() || hasWeekdayFilter() || hasTimeFilter();
-  if (!any) {
-    el.innerText = "";
-    return;
-  }
-
-  let msg = "Filtri attivi.";
-
-  if (hasWeekdayFilter()) {
-    const haveAnyDaily = (Array.isArray(state.kpiDayCat) && state.kpiDayCat.length > 0);
-    if (!haveAnyDaily) msg += " Filtro giorni della settimana attivo, ma mancano serie giornaliere.";
-  }
-
-  if (hasTimeFilter()) {
-    const haveKpiH = Array.isArray(state.kpiDayHourCat) && state.kpiDayHourCat.length > 0;
-    const haveHistH = Array.isArray(state.histDayHourCat) && state.histDayHourCat.length > 0;
-    if (!haveKpiH) msg += " Filtro orario attivo, ma manca kpi_giorno_ora_categoria.csv.";
-    if (!haveHistH) msg += " Filtro orario attivo, ma manca hist_giorno_ora_categoria.csv.";
-  }
-
-  const haveOdDay = Array.isArray(state.odDayCat) && state.odDayCat.length > 0;
-  const haveStDay = Array.isArray(state.stationsDayNode) && state.stationsDayNode.length > 0;
-  const haveHistDay = Array.isArray(state.histDayCat) && state.histDayCat.length > 0;
-
-  if ((hasDayFilter() || hasWeekdayFilter()) && !(haveOdDay || haveStDay || haveHistDay)) {
-    msg += " Per tabelle, mappa e tratte servono anche OD, stazioni e istogrammi giornalieri.";
-  }
-
-  if (hasTimeFilter() && (state.filters.dep !== "all" || state.filters.arr !== "all")) {
-    msg += " Con filtri di partenza/arrivo il filtro orario non si applica alle tratte.";
-  }
-
-  el.innerText = msg;
-}
-
-
-function groupDailyToMonthly(dailyRows) {
-  const by = new Map();
-  for (const r of dailyRows) {
-    const g = String(r.giorno || "").slice(0, 10);
-    if (!g) continue;
-    const m = g.slice(0, 7);
-    if (!by.has(m)) by.set(m, []);
-    by.get(m).push(r);
-  }
-  const out = [];
-  for (const [m, rs] of by.entries()) {
-    const s = sumRows(rs);
-    out.push({ mese: m, categoria: state.filters.cat === "all" ? "all" : state.filters.cat, ...s });
-  }
-  out.sort((a, b) => String(a.mese).localeCompare(String(b.mese)));
-  return out;
+  input.oninput = () => fillStationSelect(selectEl, items, input.value || "");
 }
 
 const state = {
+  dataBase: "data/",
   manifest: null,
   kpiDay: [],
   kpiDayCat: [],
@@ -723,8 +250,6 @@ const state = {
   kpiMonthCat: [],
   histMonthCat: [],
   histDayCat: [],
-  kpiDayHourCat: [],
-  histDayHourCat: [],
   stationsMonthNode: [],
   stationsDayNode: [],
   odMonthCat: [],
@@ -737,11 +262,7 @@ const state = {
     dep: "all",
     arr: "all",
     day_from: "",
-    day_to: "",
-    weekdays: [true, true, true, true, true, true, true],
-    time_all: true,
-    time_from: "00:00",
-    time_to: "23:59"
+    day_to: ""
   },
   map: null,
   markers: [],
@@ -768,103 +289,161 @@ function safeManifestDefaults() {
       "kpi_mese_categoria.csv",
       "od_mese_categoria.csv",
       "stazioni_mese_categoria_nodo.csv"
-    ],
-    punctuality: { on_time_threshold_minutes: 5 },
-    delay_buckets_minutes: { labels: [] },
-    min_counts: { leaderboard_min_trains: 20 }
+    ]
   };
 }
 
-async function loadAll() {
-  setMeta("Caricamento dati...");
+function passCat(r) {
+  if (state.filters.cat === "all") return true;
+  return String(r.categoria || "").trim() === state.filters.cat;
+}
 
-  const man = await fetchJsonOrNull("data/manifest.json");
-  state.manifest = man || safeManifestDefaults();
+function passDep(r) {
+  if (state.filters.dep === "all") return true;
+  return String(r.cod_partenza || "").trim() === state.filters.dep;
+}
 
-  if (state.manifest && state.manifest.built_at_utc) {
-    setMeta("Build: " + state.manifest.built_at_utc);
-  } else {
-    setMeta("Build: manifest non trovato, carico i CSV disponibili");
+function passArr(r) {
+  if (state.filters.arr === "all") return true;
+  return String(r.cod_arrivo || "").trim() === state.filters.arr;
+}
+
+function passYear(r, field) {
+  if (state.filters.year === "all") return true;
+  const k = String(r[field] || "");
+  if (field === "mese") return k.slice(0, 4) === state.filters.year;
+  if (field === "giorno") return k.slice(0, 4) === state.filters.year;
+  return true;
+}
+
+function parseISODate(d) {
+  const s = String(d || "").trim();
+  if (!s) return null;
+  const dt = new Date(s + "T00:00:00");
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function hasDayFilter() {
+  return !!(state.filters.day_from || state.filters.day_to);
+}
+
+function clampDateRange(dayFrom, dayTo) {
+  const a = parseISODate(dayFrom);
+  const b = parseISODate(dayTo);
+  if (!a && !b) return { from: null, to: null };
+  if (a && !b) return { from: a, to: a };
+  if (!a && b) return { from: b, to: b };
+  return a <= b ? { from: a, to: b } : { from: b, to: a };
+}
+
+function passDay(r, field) {
+  if (!hasDayFilter()) return true;
+
+  const key = String(r[field] || "").trim();
+  if (!key) return false;
+
+  const d = parseISODate(key);
+  if (!d) return false;
+
+  const rng = clampDateRange(state.filters.day_from, state.filters.day_to);
+  if (!rng.from || !rng.to) return true;
+
+  return d >= rng.from && d <= rng.to;
+}
+
+function passMonthFromDayRange(r, field) {
+  if (!hasDayFilter()) return true;
+
+  const key = String(r[field] || "").trim();
+  if (!key) return false;
+
+  const m0 = key + "-01";
+  const md = parseISODate(m0);
+  if (!md) return false;
+
+  const rng = clampDateRange(state.filters.day_from, state.filters.day_to);
+  if (!rng.from || !rng.to) return true;
+
+  const start = new Date(md.getFullYear(), md.getMonth(), 1);
+  const end = new Date(md.getFullYear(), md.getMonth() + 1, 0);
+
+  return end >= rng.from && start <= rng.to;
+}
+
+function setCard(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerText = value;
+}
+
+function initDayControls() {
+  const dayFrom = document.getElementById("dayFrom");
+  const dayTo = document.getElementById("dayTo");
+  if (dayFrom) dayFrom.onchange = () => { state.filters.day_from = dayFrom.value || ""; renderAll(); };
+  if (dayTo) dayTo.onchange = () => { state.filters.day_to = dayTo.value || ""; renderAll(); };
+}
+
+function safeSetData(tab, data) {
+  if (!tab) return;
+  try { tab.setData(data); } catch {}
+}
+
+function initTables() {
+  if (typeof Tabulator !== "function") return;
+
+  const stationsEl = document.getElementById("stationsTable");
+  const odEl = document.getElementById("odTable");
+  const citiesEl = document.getElementById("citiesTable");
+
+  if (stationsEl) {
+    state.tables.stations = new Tabulator(stationsEl, {
+      data: [],
+      layout: "fitColumns",
+      pagination: "local",
+      paginationSize: 10,
+      columns: [
+        { title: "Stazione", field: "nome_stazione", sorter: "string" },
+        { title: "Codice", field: "cod_stazione", sorter: "string", width: 110 },
+        { title: "Corse", field: "corse_osservate", sorter: "number", hozAlign: "right", width: 110 },
+        { title: "% ritardo", field: "pct_ritardo", sorter: "number", hozAlign: "right", width: 110, formatter: (c) => fmtFloat(c.getValue()) },
+        { title: "Minuti", field: "minuti_ritardo_tot", sorter: "number", hozAlign: "right", width: 130 },
+        { title: "Cancellati", field: "cancellate", sorter: "number", hozAlign: "right", width: 110 },
+        { title: "Soppressi", field: "soppresse", sorter: "number", hozAlign: "right", width: 110 }
+      ]
+    });
   }
 
-  const files = Array.isArray(state.manifest.gold_files) && state.manifest.gold_files.length
-    ? state.manifest.gold_files
-    : safeManifestDefaults().gold_files;
-
-  const texts = await Promise.all(files.map(f => fetchTextOrNull("data/" + f)));
-  const parsed = {};
-  let foundAnyGold = false;
-
-  for (let i = 0; i < files.length; i++) {
-    const txt = texts[i];
-    if (txt) {
-      parsed[files[i]] = parseCSV(txt);
-      foundAnyGold = true;
-    } else {
-      parsed[files[i]] = [];
-    }
+  if (odEl) {
+    state.tables.od = new Tabulator(odEl, {
+      data: [],
+      layout: "fitColumns",
+      pagination: "local",
+      paginationSize: 10,
+      columns: [
+        { title: "Partenza", field: "nome_partenza", sorter: "string" },
+        { title: "Arrivo", field: "nome_arrivo", sorter: "string" },
+        { title: "Corse", field: "corse_osservate", sorter: "number", hozAlign: "right", width: 110 },
+        { title: "% ritardo", field: "pct_ritardo", sorter: "number", hozAlign: "right", width: 110, formatter: (c) => fmtFloat(c.getValue()) },
+        { title: "Minuti", field: "minuti_ritardo_tot", sorter: "number", hozAlign: "right", width: 130 }
+      ]
+    });
   }
 
-  state.kpiDayCat = parsed["kpi_giorno_categoria.csv"] || [];
-  state.kpiMonthCat = parsed["kpi_mese_categoria.csv"] || [];
-  state.kpiDay = parsed["kpi_giorno.csv"] || [];
-  state.kpiMonth = parsed["kpi_mese.csv"] || [];
-  state.histMonthCat = parsed["hist_mese_categoria.csv"] || [];
-  state.stationsMonthNode = parsed["stazioni_mese_categoria_nodo.csv"] || [];
-  state.odMonthCat = parsed["od_mese_categoria.csv"] || [];
-
-  const extraFiles = [
-    "od_giorno_categoria.csv",
-    "stazioni_giorno_categoria_nodo.csv",
-    "hist_giorno_categoria.csv",
-    "kpi_giorno_ora_categoria.csv",
-    "hist_giorno_ora_categoria.csv"
-  ];
-
-  const extraTexts = await Promise.all(extraFiles.map(f => fetchTextOrNull("data/" + f)));
-  const extraParsed = {};
-  for (let i = 0; i < extraFiles.length; i++) {
-    extraParsed[extraFiles[i]] = extraTexts[i] ? parseCSV(extraTexts[i]) : [];
-  }
-
-  state.odDayCat = extraParsed["od_giorno_categoria.csv"] || [];
-  state.stationsDayNode = extraParsed["stazioni_giorno_categoria_nodo.csv"] || [];
-  state.histDayCat = extraParsed["hist_giorno_categoria.csv"] || [];
-  state.kpiDayHourCat = extraParsed["kpi_giorno_ora_categoria.csv"] || [];
-  state.histDayHourCat = extraParsed["hist_giorno_ora_categoria.csv"] || [];
-
-  const stTxt = await fetchTextOrNull("data/stations_dim.csv");
-  const stRows = stTxt ? parseCSV(stTxt) : [];
-
-  state.stationsRef.clear();
-  stRows.forEach(r => {
-    const code = String(r.cod_stazione || r.codice || r.cod || "").trim();
-    if (!code) return;
-
-    const name = String(r.nome_stazione || r.nome_norm || r.nome || "").trim();
-    const lat = Number(r.lat);
-    const lon = Number(r.lon);
-    const city = String(r.citta || r.comune || r.city || r.nome_comune || "").trim();
-
-    state.stationsRef.set(code, { code, name, lat, lon, city });
-  });
-
-  const capTxt = await fetchTextOrNull("data/capoluoghi_provincia.csv");
-  const capRows = capTxt ? parseCSV(capTxt) : [];
-  state.capoluoghiSet = new Set(
-    capRows.map(r => normalizeText(r.citta || r.capoluogo || r.nome || "")).filter(Boolean)
-  );
-
-  initFilters();
-  initDayControls();
-  initMap();
-  initTables();
-  initHistModeToggle();
-
-  requestAnimationFrame(() => renderAll());
-
-  if (!foundAnyGold) {
-    setMeta("Errore: non trovo i CSV in site/data. Controlla il deploy e che pubblichi la cartella site completa.");
+  if (citiesEl) {
+    state.tables.cities = new Tabulator(citiesEl, {
+      data: [],
+      layout: "fitColumns",
+      pagination: "local",
+      paginationSize: 10,
+      columns: [
+        { title: "Città", field: "city", sorter: "string" },
+        { title: "Corse", field: "corse_osservate", sorter: "number", hozAlign: "right", width: 110 },
+        { title: "% ritardo", field: "pct_ritardo", sorter: "number", hozAlign: "right", width: 110, formatter: (c) => fmtFloat(c.getValue()) },
+        { title: "Minuti", field: "minuti_ritardo_tot", sorter: "number", hozAlign: "right", width: 130 },
+        { title: "Cancellati", field: "cancellate", sorter: "number", hozAlign: "right", width: 110 },
+        { title: "Soppressi", field: "soppresse", sorter: "number", hozAlign: "right", width: 110 }
+      ]
+    });
   }
 }
 
@@ -915,638 +494,498 @@ function initFilters() {
       state.filters.arr = "all";
       state.filters.day_from = "";
       state.filters.day_to = "";
-      state.filters.weekdays = [true,true,true,true,true,true,true];
-      state.filters.time_all = true;
-      state.filters.time_from = "00:00";
-      state.filters.time_to = "23:59";
 
       if (yearSel) yearSel.value = "all";
       if (catSel) catSel.value = "all";
       if (depSel) depSel.value = "all";
       if (arrSel) arrSel.value = "all";
 
-      const depSearch = document.getElementById("depSearch");
-      const arrSearch = document.getElementById("arrSearch");
-      if (depSearch) depSearch.value = "";
-      if (arrSearch) arrSearch.value = "";
-      fillStationSelect(depSel, depItems, "");
-      fillStationSelect(arrSel, arrItems, "");
-
       const dayFrom = document.getElementById("dayFrom");
       const dayTo = document.getElementById("dayTo");
       if (dayFrom) dayFrom.value = "";
       if (dayTo) dayTo.value = "";
 
-      const weekdayBtns = document.querySelectorAll("#weekdayWrap button[data-wd]");
-      if (weekdayBtns && weekdayBtns.length) {
-        weekdayBtns.forEach(b => {
-          b.style.opacity = "1";
-          b.style.borderColor = "rgba(255,255,255,0.85)";
-        });
-      }
-
-      const timeAll = document.getElementById("timeAll");
-      const timeFrom = document.getElementById("timeFrom");
-      const timeTo = document.getElementById("timeTo");
-      if (timeAll) timeAll.checked = true;
-      if (timeFrom) { timeFrom.value = "00:00"; timeFrom.disabled = true; }
-      if (timeTo) { timeTo.value = "23:59"; timeTo.disabled = true; }
-
-            updateDayNote();
       renderAll();
     };
-  }
-
-  const thr = state.manifest && state.manifest.punctuality ? state.manifest.punctuality.on_time_threshold_minutes : 5;
-  const noteEl = document.getElementById("noteThreshold");
-  if (noteEl) noteEl.innerText = "In orario significa ritardo arrivo tra 0 e " + thr + " minuti. Anticipo è ritardo negativo.";
-}
-
-function passYear(row, keyField) {
-  if (state.filters.year === "all") return true;
-  const v = String(row[keyField] || "");
-  return v.startsWith(state.filters.year);
-}
-
-function passCat(row) {
-  if (state.filters.cat === "all") return true;
-  return String(row.categoria) === state.filters.cat;
-}
-
-function passDep(row) {
-  if (state.filters.dep === "all") return true;
-  return String(row.cod_partenza) === state.filters.dep;
-}
-
-function passArr(row) {
-  if (state.filters.arr === "all") return true;
-  return String(row.cod_arrivo) === state.filters.arr;
-}
-
-function sumRows(rows) {
-  const keys = [
-    "corse_osservate","effettuate","cancellate","soppresse","parzialmente_cancellate","info_mancante",
-    "in_orario","in_ritardo","in_anticipo",
-    "oltre_5","oltre_10","oltre_15","oltre_30","oltre_60",
-    "minuti_ritardo_tot","minuti_anticipo_tot","minuti_netti_tot"
-  ];
-  const out = {};
-  keys.forEach(k => out[k] = 0);
-  rows.forEach(r => keys.forEach(k => out[k] += toNum(r[k])));
-  return out;
-}
-
-function renderKPI() {
-  updateDayNote();
-
-  const kpiTotal = document.getElementById("kpiTotal");
-  const kpiLate = document.getElementById("kpiLate");
-  const kpiLateMin = document.getElementById("kpiLateMin");
-  const kpiCancelled = document.getElementById("kpiCancelled");
-  const kpiSuppressed = document.getElementById("kpiSuppressed");
-  if (!kpiTotal || !kpiLate || !kpiLateMin || !kpiCancelled || !kpiSuppressed) return;
-
-  const wantDay = (hasDayFilter() || hasWeekdayFilter()) && state.odDayCat.length > 0;
-
-  if (state.filters.dep !== "all" || state.filters.arr !== "all") {
-    const odBase = wantDay && state.odDayCat.length ? state.odDayCat : state.odMonthCat;
-    const keyField = wantDay && state.odDayCat.length ? "giorno" : "mese";
-
-    let od = odBase;
-    if (state.filters.year !== "all") od = od.filter(r => passYear(r, keyField));
-    if (state.filters.cat !== "all") od = od.filter(passCat);
-    if (wantDay && keyField === "giorno") {
-      if (hasDayFilter()) od = od.filter(r => passDay(r, "giorno"));
-      if (hasWeekdayFilter()) od = od.filter(r => passWeekday(r, "giorno"));
-    }
-    if (state.filters.dep !== "all") od = od.filter(passDep);
-    if (state.filters.arr !== "all") od = od.filter(passArr);
-
-    const s = sumRows(od);
-    kpiTotal.innerText = fmtInt(s.corse_osservate);
-    kpiLate.innerText = fmtInt(s.in_ritardo);
-    kpiLateMin.innerText = fmtInt(s.minuti_ritardo_tot);
-    kpiCancelled.innerText = fmtInt(s.cancellate);
-    kpiSuppressed.innerText = fmtInt(s.soppresse);
-    return;
-  }
-  const needDaily = hasDayFilter() || hasWeekdayFilter() || hasTimeFilter();
-  if (needDaily) {
-    const daily = getKpiDailyRowsFiltered();
-    const s = sumRows(daily);
-    kpiTotal.innerText = fmtInt(s.corse_osservate);
-    kpiLate.innerText = fmtInt(s.in_ritardo);
-    kpiLateMin.innerText = fmtInt(s.minuti_ritardo_tot);
-    kpiCancelled.innerText = fmtInt(s.cancellate);
-    kpiSuppressed.innerText = fmtInt(s.soppresse);
-    return;
-  }
-
-  let rows = state.kpiMonthCat;
-  if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, "mese"));
-  if (state.filters.cat !== "all") rows = rows.filter(passCat);
-
-  const s = sumRows(rows);
-  kpiTotal.innerText = fmtInt(s.corse_osservate);
-  kpiLate.innerText = fmtInt(s.in_ritardo);
-  kpiLateMin.innerText = fmtInt(s.minuti_ritardo_tot);
-  kpiCancelled.innerText = fmtInt(s.cancellate);
-  kpiSuppressed.innerText = fmtInt(s.soppresse);
-}
-
-function renderSeries() {
-  if (typeof Plotly === "undefined") return;
-
-  const chartEl = document.getElementById("chartDaily");
-  if (!chartEl) return;
-
-  const chartMonthEl = document.getElementById("chartMonthly");
-  if (!chartMonthEl) return;
-
-  const year = state.filters.year;
-  const cat = state.filters.cat;
-
-  const label = (year !== "all" ? year : "Tutti gli anni") + " · " + (cat !== "all" ? cat : "Tutte le categorie");
-
-  const sumKeys = [
-    "corse_osservate","effettuate","cancellate","soppresse","parzialmente_cancellate","info_mancante",
-    "in_orario","in_ritardo","in_anticipo",
-    "oltre_5","oltre_10","oltre_15","oltre_30","oltre_60",
-    "minuti_ritardo_tot","minuti_anticipo_tot","minuti_netti_tot"
-  ];
-
-  const groupToDaily = (rows, dayField) => {
-    const by = new Map();
-    for (const r of rows) {
-      const g = String(r[dayField] || "").slice(0, 10);
-      if (!g) continue;
-      if (!by.has(g)) {
-        const base = { giorno: g };
-        sumKeys.forEach(k => base[k] = 0);
-        by.set(g, base);
-      }
-      const a = by.get(g);
-      sumKeys.forEach(k => a[k] += toNum(r[k]));
-    }
-    const out = Array.from(by.values());
-    out.sort((a, b) => String(a.giorno).localeCompare(String(b.giorno)));
-    return out;
-  };
-
-  // Serie giornaliera: se ci sono filtri di partenza/arrivo, proviamo a usare OD giornaliero.
-  let dailyRows = [];
-  let dailyNote = "";
-
-  if (state.filters.dep !== "all" || state.filters.arr !== "all") {
-    if (Array.isArray(state.odDayCat) && state.odDayCat.length > 0) {
-      let od = state.odDayCat;
-      if (year !== "all") od = od.filter(r => passYear(r, "giorno"));
-      if (cat !== "all") od = od.filter(passCat);
-
-      if (hasDayFilter()) od = od.filter(r => passDay(r, "giorno"));
-      if (hasWeekdayFilter()) od = od.filter(r => passWeekday(r, "giorno"));
-
-      if (state.filters.dep !== "all") od = od.filter(passDep);
-      if (state.filters.arr !== "all") od = od.filter(passArr);
-
-      dailyRows = groupToDaily(od, "giorno");
-    } else {
-      dailyNote = "Serie giornaliera non disponibile (manca od_giorno_categoria.csv).";
-    }
-  } else {
-    dailyRows = getKpiDailyRowsFiltered();
-  }
-
-  const xDay = dailyRows.map(r => String(r.giorno || "").slice(0, 10));
-  const yLate = dailyRows.map(r => {
-    const n = toNum(r.corse_osservate);
-    const late = toNum(r.in_ritardo);
-    return n > 0 ? (late / n) * 100 : 0;
-  });
-
-  Plotly.newPlot("chartDaily", [{
-    x: xDay,
-    y: yLate,
-    mode: "lines",
-    name: "Ritardo %"
-  }], {
-    margin: { t: 20, l: 40, r: 20, b: 60 },
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
-    font: { color: "#e6e9f2" },
-    xaxis: { title: label, gridcolor: "rgba(255,255,255,0.08)" },
-    yaxis: { title: "% in ritardo", ticksuffix: "%", gridcolor: "rgba(255,255,255,0.08)", rangemode: "tozero" },
-    annotations: dailyNote ? [{
-      text: dailyNote,
-      xref: "paper",
-      yref: "paper",
-      x: 0.5,
-      y: 0.5,
-      showarrow: false,
-      font: { size: 12 }
-    }] : []
-  }, { displayModeBar: false });
-
-  // Serie mensile
-  let monthlyRows = [];
-
-  if (state.filters.dep !== "all" || state.filters.arr !== "all") {
-    // Se abbiamo già la serie giornaliera OD, possiamo aggregare a mesi.
-    if (dailyRows.length && (hasDayFilter() || hasWeekdayFilter())) {
-      monthlyRows = groupDailyToMonthly(dailyRows);
-    } else {
-      let od = state.odMonthCat;
-      if (year !== "all") od = od.filter(r => passYear(r, "mese"));
-      if (cat !== "all") od = od.filter(passCat);
-
-      if (hasDayFilter()) od = od.filter(r => passMonthFromDayRange(r, "mese"));
-      if (hasWeekdayFilter()) od = [];
-
-      if (state.filters.dep !== "all") od = od.filter(passDep);
-      if (state.filters.arr !== "all") od = od.filter(passArr);
-
-      monthlyRows = od;
-    }
-  } else {
-    monthlyRows = getKpiMonthlyRowsFiltered();
-  }
-
-  const xM = monthlyRows.map(r => String(r.mese || "").slice(0, 7));
-  const yM = monthlyRows.map(r => {
-    const n = toNum(r.corse_osservate);
-    const late = toNum(r.in_ritardo);
-    return n > 0 ? (late / n) * 100 : 0;
-  });
-
-  Plotly.newPlot("chartMonthly", [{
-    x: xM,
-    y: yM,
-    mode: "lines+markers",
-    name: "Ritardo %"
-  }], {
-    margin: { t: 10, l: 40, r: 20, b: 60 },
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
-    font: { color: "#e6e9f2" },
-    xaxis: { title: "Serie mensile", gridcolor: "rgba(255,255,255,0.08)" },
-    yaxis: { title: "% in ritardo", ticksuffix: "%", gridcolor: "rgba(255,255,255,0.08)", rangemode: "tozero" }
-  }, { displayModeBar: false });
-}
-
-
-function renderHist() {
-  if (typeof Plotly === "undefined") return;
-  const chartHistEl = document.getElementById("chartHist");
-  if (!chartHistEl) return;
-
-  const t = document.getElementById("histModeToggle");
-  const mode = t && t.checked ? "pct" : "count";
-
-  const rows = getHistRowsFiltered();
-
-  const labels = state.manifest && state.manifest.delay_buckets_minutes && Array.isArray(state.manifest.delay_buckets_minutes.labels)
-    ? state.manifest.delay_buckets_minutes.labels
-    : [];
-
-  if (!labels.length) {
-    Plotly.newPlot("chartHist", [{ x: [], y: [], type: "bar" }], {
-      margin: { t: 10, l: 40, r: 20, b: 60 },
-      paper_bgcolor: "rgba(0,0,0,0)",
-      plot_bgcolor: "rgba(0,0,0,0)",
-      font: { color: "#e6e9f2" }
-    }, { displayModeBar: false });
-    return;
-  }
-
-  const norm = (s) => String(s || "").replace(/\s+/g, "");
-  const canon = new Map();
-  labels.forEach(l => canon.set(norm(l), l));
-
-  const byBucket = new Map();
-  labels.forEach(l => byBucket.set(l, 0));
-
-  rows.forEach(r => {
-    const raw = r.bucket_ritardo_arrivo;
-    const key = canon.get(norm(raw));
-    if (!key) return;
-    const c = toNum(r.count);
-    byBucket.set(key, (byBucket.get(key) || 0) + c);
-  });
-
-  const x = labels;
-  const counts = labels.map(l => byBucket.get(l) || 0);
-  const total = counts.reduce((a, b) => a + b, 0);
-
-  const y = mode === "pct"
-    ? counts.map(v => total > 0 ? (v / total) * 100 : 0)
-    : counts;
-
-  const yTitle = mode === "pct" ? "Percentuale" : "Conteggio";
-  const ySuffix = mode === "pct" ? "%" : "";
-
-  Plotly.newPlot("chartHist", [{ x, y, name: mode === "pct" ? "Percentuale" : "Conteggio", type: "bar" }], {
-    margin: { t: 10, l: 40, r: 20, b: 90 },
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
-    font: { color: "#e6e9f2" },
-    xaxis: { title: \"Ritardo arrivo (min)\", type: \"category\", tickangle: -35, gridcolor: \"rgba(255,255,255,0.08)\" },
-    yaxis: { title: yTitle, ticksuffix: ySuffix, gridcolor: "rgba(255,255,255,0.08)" }
-  }, { displayModeBar: false });
-}
-
-
-function initTables() {
-  if (typeof Tabulator === "undefined") return;
-
-  const stEl = document.getElementById("tableStations");
-  if (stEl) {
-    state.tables.stations = new Tabulator("#tableStations", {
-      layout: "fitColumns",
-      height: "360px",
-      movableColumns: true,
-      placeholder: "Nessun dato per i filtri selezionati",
-      columns: [
-        { title: "Periodo", field: "mese", sorter: "string" },
-        { title: "Categoria", field: "categoria", sorter: "string" },
-        { title: "Stazione", field: "nome_stazione", sorter: "string" },
-        { title: "Codice", field: "cod_stazione", sorter: "string" },
-        { title: "Treni", field: "corse_osservate", sorter: "number", hozAlign: "right" },
-        { title: "In ritardo", field: "in_ritardo", sorter: "number", hozAlign: "right" },
-        { title: "Minuti ritardo", field: "minuti_ritardo_tot", sorter: "number", hozAlign: "right" },
-        { title: "Cancellati", field: "cancellate", sorter: "number", hozAlign: "right" },
-        { title: "Soppressi", field: "soppresse", sorter: "number", hozAlign: "right" },
-        { title: "% ritardo", field: "pct_ritardo", sorter: "number", hozAlign: "right", formatter: (c) => fmtFloat(c.getValue()) }
-      ]
-    });
-  }
-
-  const odEl = document.getElementById("tableOD");
-  if (odEl) {
-    state.tables.od = new Tabulator("#tableOD", {
-      layout: "fitColumns",
-      height: "360px",
-      movableColumns: true,
-      placeholder: "Nessun dato per i filtri selezionati",
-      columns: [
-        { title: "Periodo", field: "mese", sorter: "string" },
-        { title: "Categoria", field: "categoria", sorter: "string" },
-        { title: "Partenza", field: "nome_partenza", sorter: "string" },
-        { title: "Arrivo", field: "nome_arrivo", sorter: "string" },
-        { title: "Treni", field: "corse_osservate", sorter: "number", hozAlign: "right" },
-        { title: "In ritardo", field: "in_ritardo", sorter: "number", hozAlign: "right" },
-        { title: "Minuti ritardo", field: "minuti_ritardo_tot", sorter: "number", hozAlign: "right" },
-        { title: "Cancellati", field: "cancellate", sorter: "number", hozAlign: "right" },
-        { title: "Soppressi", field: "soppresse", sorter: "number", hozAlign: "right" },
-        { title: "% ritardo", field: "pct_ritardo", sorter: "number", hozAlign: "right", formatter: (c) => fmtFloat(c.getValue()) }
-      ]
-    });
-  }
-
-  const citiesEl = document.getElementById("tableCities");
-  if (citiesEl) {
-    state.tables.cities = new Tabulator("#tableCities", {
-      layout: "fitColumns",
-      height: "360px",
-      movableColumns: true,
-      placeholder: "Nessun dato per i filtri selezionati",
-      columns: [
-        { title: "Città", field: "citta", sorter: "string" },
-        { title: "Treni", field: "corse_osservate", sorter: "number", hozAlign: "right" },
-        { title: "In ritardo", field: "in_ritardo", sorter: "number", hozAlign: "right" },
-        { title: "Minuti ritardo", field: "minuti_ritardo_tot", sorter: "number", hozAlign: "right" },
-        { title: "Cancellati", field: "cancellate", sorter: "number", hozAlign: "right" },
-        { title: "Soppressi", field: "soppresse", sorter: "number", hozAlign: "right" },
-        { title: "% ritardo", field: "pct_ritardo", sorter: "number", hozAlign: "right", formatter: (c) => fmtFloat(c.getValue()) }
-      ]
-    });
-  }
-}
-
-function renderTables() {
-  const minN = state.manifest && state.manifest.min_counts ? toNum(state.manifest.min_counts.leaderboard_min_trains) : 20;
-
-  if (state.tables.stations) {
-    const useDay = (hasDayFilter() || hasWeekdayFilter()) && state.stationsDayNode.length > 0 && state.filters.dep === "all" && state.filters.arr === "all";
-    const base = useDay ? state.stationsDayNode : state.stationsMonthNode;
-    const keyField = useDay ? "giorno" : "mese";
-
-    let st = base;
-    if (state.filters.year !== "all") st = st.filter(r => passYear(r, keyField));
-    if (state.filters.cat !== "all") st = st.filter(passCat);
-    if (useDay) {
-      if (hasDayFilter()) st = st.filter(r => passDay(r, "giorno"));
-      if (hasWeekdayFilter()) st = st.filter(r => passWeekday(r, "giorno"));
-    }
-    if (!useDay && hasDayFilter()) st = st.filter(r => passMonthFromDayRange(r, "mese"));
-  if (!useDay && hasWeekdayFilter()) st = [];
-    if (!useDay && hasWeekdayFilter()) st = [];
-    if (state.filters.dep !== "all" || state.filters.arr !== "all") st = [];
-
-    st = st.map(r => {
-      const n = toNum(r.corse_osservate);
-      const late = toNum(r.in_ritardo);
-      const pct = n > 0 ? (late / n) * 100 : 0;
-      const periodo = useDay ? String(r.giorno || "").slice(0, 10) : String(r.mese || "").slice(0, 7);
-      return { ...r, mese: periodo, pct_ritardo: pct };
-    }).filter(r => toNum(r.corse_osservate) >= minN);
-
-    safeSetData(state.tables.stations, st);
-  }
-
-  if (state.tables.od) {
-    const useDay = (hasDayFilter() || hasWeekdayFilter()) && state.odDayCat.length > 0;
-    const base = useDay ? state.odDayCat : state.odMonthCat;
-    const keyField = useDay ? "giorno" : "mese";
-
-    let od = base;
-    if (state.filters.year !== "all") od = od.filter(r => passYear(r, keyField));
-    if (state.filters.cat !== "all") od = od.filter(passCat);
-    if (useDay) {
-      if (hasDayFilter()) od = od.filter(r => passDay(r, "giorno"));
-      if (hasWeekdayFilter()) od = od.filter(r => passWeekday(r, "giorno"));
-    }
-    if (!useDay && hasDayFilter()) od = od.filter(r => passMonthFromDayRange(r, "mese"));
-    if (!useDay && hasWeekdayFilter()) od = [];
-    if (state.filters.dep !== "all") od = od.filter(passDep);
-    if (state.filters.arr !== "all") od = od.filter(passArr);
-
-    od = od.map(r => {
-      const n = toNum(r.corse_osservate);
-      const late = toNum(r.in_ritardo);
-      const pct = n > 0 ? (late / n) * 100 : 0;
-      const periodo = useDay ? String(r.giorno || "").slice(0, 10) : String(r.mese || "").slice(0, 7);
-      return { ...r, mese: periodo, pct_ritardo: pct };
-    }).filter(r => toNum(r.corse_osservate) >= minN);
-
-    safeSetData(state.tables.od, od);
   }
 }
 
 function initMap() {
   const mapEl = document.getElementById("map");
   if (!mapEl) return;
-  if (typeof L === "undefined") return;
 
-  state.map = L.map("map", { preferCanvas: true }).setView([41.9, 12.5], 6);
+  if (typeof L !== "object" || typeof L.map !== "function") return;
+
+  state.map = L.map("map", {
+    center: [42.5, 12.5],
+    zoom: 6,
+    zoomSnap: 0.5
+  });
+
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 18,
-    attribution: "&copy; OpenStreetMap contributors"
+    attribution: "&copy; OpenStreetMap contributors",
+    maxZoom: 18
   }).addTo(state.map);
-
-  const metricSel = document.getElementById("mapMetricSel");
-  if (metricSel) {
-    metricSel.onchange = () => {
-      renderMap();
-      renderCities();
-    };
-  }
 }
 
 function clearMarkers() {
-  state.markers.forEach(m => {
-    try {
-      if (m && typeof m.remove === "function") m.remove();
-    } catch {}
-  });
+  if (!state.map) return;
+  for (const m of state.markers) {
+    try { state.map.removeLayer(m); } catch {}
+  }
   state.markers = [];
+}
+
+function clampPct(x) {
+  const v = Number(x);
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(100, v));
+}
+
+function hasValidCoords(c) {
+  if (!c) return false;
+  const lat = Number(c.lat);
+  const lon = Number(c.lon);
+  return Number.isFinite(lat) && Number.isFinite(lon);
+}
+
+function mapMetricValue(row, metric) {
+  if (!row) return 0;
+  if (metric === "pct_ritardo") {
+    const n = toNum(row.corse_osservate);
+    const d = toNum(row.in_ritardo);
+    return n > 0 ? (d / n) * 100 : 0;
+  }
+  if (metric === "minuti_ritardo_tot") return toNum(row.minuti_ritardo_tot);
+  if (metric === "ritardo_medio") return toNum(row.ritardo_medio);
+  if (metric === "p90") return toNum(row.p90);
+  if (metric === "p95") return toNum(row.p95);
+  return 0;
+}
+
+function normalizeBucketLabel(s) {
+  return String(s || "").replace(/\s+/g, "").trim();
+}
+
+function initHistModeToggle() {
+  const sel = document.getElementById("histModeSel");
+  if (!sel) return;
+  sel.onchange = () => renderAll();
+}
+
+function getHistMode() {
+  const sel = document.getElementById("histModeSel");
+  if (!sel) return "month";
+  const v = String(sel.value || "month");
+  return v === "day" ? "day" : "month";
+}
+
+function getMapMetric() {
+  const sel = document.getElementById("mapMetricSel");
+  if (!sel) return "pct_ritardo";
+  return String(sel.value || "pct_ritardo");
+}
+
+function renderKPI() {
+  const useDay = hasDayFilter() && state.kpiDayCat.length > 0;
+
+  const base = useDay ? state.kpiDayCat : state.kpiMonthCat;
+  const keyField = useDay ? "giorno" : "mese";
+
+  let rows = base;
+  if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, keyField));
+  if (state.filters.cat !== "all") rows = rows.filter(passCat);
+  if (useDay) rows = rows.filter(r => passDay(r, "giorno"));
+  if (!useDay && hasDayFilter()) rows = rows.filter(r => passMonthFromDayRange(r, "mese"));
+
+  const total = rows.reduce((a, r) => a + toNum(r.corse_osservate), 0);
+  const inrit = rows.reduce((a, r) => a + toNum(r.in_ritardo), 0);
+  const minTot = rows.reduce((a, r) => a + toNum(r.minuti_ritardo_tot), 0);
+  const canc = rows.reduce((a, r) => a + toNum(r.cancellate), 0);
+  const sopp = rows.reduce((a, r) => a + toNum(r.soppresse), 0);
+
+  setCard("cardTotal", fmtInt(total));
+  setCard("cardLate", fmtInt(inrit));
+  setCard("cardMin", fmtInt(minTot));
+  setCard("cardCanc", fmtInt(canc));
+  setCard("cardSopp", fmtInt(sopp));
+}
+
+function seriesDataDaily() {
+  let rows = state.kpiDayCat.length ? state.kpiDayCat : state.kpiDay;
+  if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, "giorno"));
+  if (state.filters.cat !== "all") rows = rows.filter(passCat);
+  if (hasDayFilter()) rows = rows.filter(r => passDay(r, "giorno"));
+
+  const byDay = new Map();
+
+  for (const r of rows) {
+    const day = String(r.giorno || "").trim();
+    if (!day) continue;
+    if (!byDay.has(day)) byDay.set(day, { giorno: day, corse: 0, rit: 0 });
+    const o = byDay.get(day);
+    o.corse += toNum(r.corse_osservate);
+    o.rit += toNum(r.in_ritardo);
+  }
+
+  const out = Array.from(byDay.values()).sort((a, b) => String(a.giorno).localeCompare(String(b.giorno)));
+  const x = out.map(o => o.giorno);
+  const y = out.map(o => o.corse > 0 ? (o.rit / o.corse) * 100 : 0);
+
+  return { x, y };
+}
+
+function seriesDataMonthly() {
+  let rows = state.kpiMonthCat.length ? state.kpiMonthCat : state.kpiMonth;
+  if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, "mese"));
+  if (state.filters.cat !== "all") rows = rows.filter(passCat);
+  if (hasDayFilter()) rows = rows.filter(r => passMonthFromDayRange(r, "mese"));
+
+  const byM = new Map();
+
+  for (const r of rows) {
+    const m = String(r.mese || "").trim();
+    if (!m) continue;
+    if (!byM.has(m)) byM.set(m, { mese: m, corse: 0, rit: 0 });
+    const o = byM.get(m);
+    o.corse += toNum(r.corse_osservate);
+    o.rit += toNum(r.in_ritardo);
+  }
+
+  const out = Array.from(byM.values()).sort((a, b) => String(a.mese).localeCompare(String(b.mese)));
+  const x = out.map(o => o.mese);
+  const y = out.map(o => o.corse > 0 ? (o.rit / o.corse) * 100 : 0);
+
+  return { x, y };
+}
+
+function renderSeries() {
+  if (typeof Plotly !== "object") return;
+
+  const d = seriesDataDaily();
+  const m = seriesDataMonthly();
+
+  const t1 = document.getElementById("chartDay");
+  const t2 = document.getElementById("chartMonth");
+
+  if (t1) {
+    Plotly.react(t1, [{
+      x: d.x,
+      y: d.y,
+      type: "scatter",
+      mode: "lines+markers",
+      name: "% in ritardo"
+    }], {
+      margin: { l: 50, r: 20, t: 10, b: 50 },
+      yaxis: { title: "% in ritardo", rangemode: "tozero" },
+      xaxis: { type: "category" },
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      font: { color: "#e8eefc" }
+    }, { displayModeBar: false, responsive: true });
+  }
+
+  if (t2) {
+    Plotly.react(t2, [{
+      x: m.x,
+      y: m.y,
+      type: "scatter",
+      mode: "lines+markers",
+      name: "% in ritardo"
+    }], {
+      margin: { l: 50, r: 20, t: 10, b: 50 },
+      yaxis: { title: "% in ritardo", rangemode: "tozero" },
+      xaxis: { type: "category" },
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      font: { color: "#e8eefc" }
+    }, { displayModeBar: false, responsive: true });
+  }
+}
+
+function renderHist() {
+  if (typeof Plotly !== "object") return;
+
+  const mode = getHistMode();
+  const useDay = mode === "day" && state.histDayCat.length > 0;
+  const base = useDay ? state.histDayCat : state.histMonthCat;
+  const keyField = useDay ? "giorno" : "mese";
+
+  let rows = base;
+  if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, keyField));
+  if (state.filters.cat !== "all") rows = rows.filter(passCat);
+  if (useDay && hasDayFilter()) rows = rows.filter(r => passDay(r, "giorno"));
+  if (!useDay && hasDayFilter()) rows = rows.filter(r => passMonthFromDayRange(r, "mese"));
+
+  const byBucket = new Map();
+
+  for (const r of rows) {
+    const b = normalizeBucketLabel(r.bucket_ritardo_arrivo || "");
+    if (!b) continue;
+    if (!byBucket.has(b)) byBucket.set(b, { bucket: r.bucket_ritardo_arrivo, count: 0 });
+    const o = byBucket.get(b);
+    o.count += toNum(r.count);
+  }
+
+  const bucketsOrder = (state.manifest && Array.isArray(state.manifest.delay_bucket_labels))
+    ? state.manifest.delay_bucket_labels
+    : [
+      "<=-60",
+      "(-60,-30]",
+      "(-30,-15]",
+      "(-15,-10]",
+      "(-10,-5]",
+      "(-5,-1]",
+      "(-1,0]",
+      "(0,1]",
+      "(1,5]",
+      "(5,10]",
+      "(10,15]",
+      "(15,30]",
+      "(30,60]",
+      "(60,120]",
+      ">120"
+    ];
+
+  const orderedKeys = bucketsOrder.map(normalizeBucketLabel);
+  const x = [];
+  const y = [];
+
+  for (let i = 0; i < bucketsOrder.length; i++) {
+    const k = orderedKeys[i];
+    const obj = byBucket.get(k);
+    x.push(bucketsOrder[i]);
+    y.push(obj ? obj.count : 0);
+  }
+
+  const el = document.getElementById("chartHist");
+  if (!el) return;
+
+  Plotly.react(el, [{
+    x,
+    y,
+    type: "bar",
+    name: "Conteggio"
+  }], {
+    margin: { l: 50, r: 20, t: 10, b: 70 },
+    yaxis: { title: "Conteggio", rangemode: "tozero" },
+    xaxis: { tickangle: -35 },
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
+    font: { color: "#e8eefc" }
+  }, { displayModeBar: false, responsive: true });
+}
+
+function renderTables() {
+  const useDay = hasDayFilter() && state.stationsDayNode.length > 0;
+  const baseStations = useDay ? state.stationsDayNode : state.stationsMonthNode;
+  const keyField = useDay ? "giorno" : "mese";
+
+  let rows = baseStations;
+  if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, keyField));
+  if (state.filters.cat !== "all") rows = rows.filter(passCat);
+  if (useDay && hasDayFilter()) rows = rows.filter(r => passDay(r, "giorno"));
+  if (!useDay && hasDayFilter()) rows = rows.filter(r => passMonthFromDayRange(r, "mese"));
+
+  const agg = new Map();
+
+  for (const r of rows) {
+    const code = String(r.cod_stazione || "").trim();
+    if (!code) continue;
+    if (!agg.has(code)) agg.set(code, {
+      cod_stazione: code,
+      nome_stazione: stationName(code, r.nome_stazione || ""),
+      corse_osservate: 0,
+      in_ritardo: 0,
+      minuti_ritardo_tot: 0,
+      cancellate: 0,
+      soppresse: 0
+    });
+
+    const a = agg.get(code);
+    a.corse_osservate += toNum(r.corse_osservate);
+    a.in_ritardo += toNum(r.in_ritardo);
+    a.minuti_ritardo_tot += toNum(r.minuti_ritardo_tot);
+    a.cancellate += toNum(r.cancellate);
+    a.soppresse += toNum(r.soppresse);
+  }
+
+  let out = Array.from(agg.values());
+  out.forEach(o => {
+    o.pct_ritardo = o.corse_osservate > 0 ? (o.in_ritardo / o.corse_osservate) * 100 : 0;
+  });
+
+  out.sort((a, b) => toNum(b.pct_ritardo) - toNum(a.pct_ritardo));
+  out = out.slice(0, 200);
+
+  safeSetData(state.tables.stations, out);
+  try { state.tables.stations.setSort("pct_ritardo", "desc"); } catch {}
+
+  const useDayOD = hasDayFilter() && state.odDayCat.length > 0;
+  const baseOD = useDayOD ? state.odDayCat : state.odMonthCat;
+  const keyFieldOD = useDayOD ? "giorno" : "mese";
+
+  let od = baseOD;
+  if (state.filters.year !== "all") od = od.filter(r => passYear(r, keyFieldOD));
+  if (state.filters.cat !== "all") od = od.filter(passCat);
+  if (useDayOD && hasDayFilter()) od = od.filter(r => passDay(r, "giorno"));
+  if (!useDayOD && hasDayFilter()) od = od.filter(r => passMonthFromDayRange(r, "mese"));
+  if (state.filters.dep !== "all") od = od.filter(passDep);
+  if (state.filters.arr !== "all") od = od.filter(passArr);
+
+  const odOut = od.map(r => {
+    const corse = toNum(r.corse_osservate);
+    const rit = toNum(r.in_ritardo);
+    return {
+      cod_partenza: r.cod_partenza,
+      cod_arrivo: r.cod_arrivo,
+      nome_partenza: stationName(r.cod_partenza, r.nome_partenza),
+      nome_arrivo: stationName(r.cod_arrivo, r.nome_arrivo),
+      corse_osservate: corse,
+      pct_ritardo: corse > 0 ? (rit / corse) * 100 : 0,
+      minuti_ritardo_tot: toNum(r.minuti_ritardo_tot)
+    };
+  });
+
+  odOut.sort((a, b) => toNum(b.pct_ritardo) - toNum(a.pct_ritardo));
+  const odTop = odOut.slice(0, 200);
+
+  safeSetData(state.tables.od, odTop);
+  try { state.tables.od.setSort("pct_ritardo", "desc"); } catch {}
 }
 
 function renderMap() {
   if (!state.map) return;
-  if (typeof L === "undefined") return;
 
   clearMarkers();
 
-  const metricSel = document.getElementById("mapMetricSel");
-  const metric = metricSel ? metricSel.value : "pct_ritardo";
-  const minN = state.manifest && state.manifest.min_counts ? toNum(state.manifest.min_counts.leaderboard_min_trains) : 20;
+  const metric = getMapMetric();
 
-  const useDay = (hasDayFilter() || hasWeekdayFilter()) && state.stationsDayNode.length > 0 && state.filters.dep === "all" && state.filters.arr === "all";
-  const base = useDay ? state.stationsDayNode : state.stationsMonthNode;
+  const useDay = hasDayFilter() && state.stationsDayNode.length > 0;
+  const baseStations = useDay ? state.stationsDayNode : state.stationsMonthNode;
   const keyField = useDay ? "giorno" : "mese";
 
-  let st = base;
-  if (state.filters.year !== "all") st = st.filter(r => passYear(r, keyField));
-  if (state.filters.cat !== "all") st = st.filter(passCat);
-  if (useDay) {
-      if (hasDayFilter()) st = st.filter(r => passDay(r, "giorno"));
-      if (hasWeekdayFilter()) st = st.filter(r => passWeekday(r, "giorno"));
-    }
-  if (!useDay && hasDayFilter()) st = st.filter(r => passMonthFromDayRange(r, "mese"));
-  if (!useDay && hasWeekdayFilter()) st = [];
-    if (!useDay && hasWeekdayFilter()) st = [];
-  if (state.filters.dep !== "all" || state.filters.arr !== "all") st = [];
-
-  let missingCoords = 0;
-
-  st.forEach(r => {
-    const n = toNum(r.corse_osservate);
-    if (n < minN) return;
-
-    const code = String(r.cod_stazione || "").trim();
-    const coords = stationCoords(code);
-    if (!coords) {
-      missingCoords++;
-      return;
-    }
-
-    const late = toNum(r.in_ritardo);
-    const pct = n > 0 ? (late / n) * 100 : 0;
-
-    let v = 0;
-    if (metric === "pct_ritardo") v = pct;
-    if (metric === "in_ritardo") v = late;
-    if (metric === "minuti_ritardo_tot") v = toNum(r.minuti_ritardo_tot);
-    if (metric === "cancellate") v = toNum(r.cancellate);
-    if (metric === "soppresse") v = toNum(r.soppresse);
-
-    const radius = Math.max(4, Math.min(18, Math.sqrt(v + 1)));
-    const marker = L.circleMarker([coords.lat, coords.lon], {
-      radius,
-      weight: 1,
-      opacity: 0.9,
-      fillOpacity: 0.35
-    }).addTo(state.map);
-
-    marker.bindTooltip(
-      `<div style="font-size:12px">
-        <div><b>${stationName(code, r.nome_stazione)}</b> (${code})</div>
-        <div>Treni: ${fmtInt(n)}</div>
-        <div>In ritardo: ${fmtInt(late)} (${fmtFloat(pct)}%)</div>
-        <div>Minuti ritardo: ${fmtInt(toNum(r.minuti_ritardo_tot))}</div>
-        <div>Cancellati: ${fmtInt(toNum(r.cancellate))}</div>
-        <div>Soppressi: ${fmtInt(toNum(r.soppresse))}</div>
-      </div>`
-    );
-
-    state.markers.push(marker);
-  });
-
-  const note = missingCoords > 0
-    ? "Alcune stazioni non hanno coordinate e non sono disegnate sulla mappa."
-    : "Coordinate stazioni complete per il set filtrato.";
-  const noteEl = document.getElementById("mapNote");
-  if (noteEl) noteEl.innerText = note;
-}
-
-function renderCities() {
-  if (!state.tables.cities) return;
-
-  const minN = state.manifest && state.manifest.min_counts ? toNum(state.manifest.min_counts.leaderboard_min_trains) : 20;
-  const metricSel = document.getElementById("mapMetricSel");
-  let metric = metricSel ? metricSel.value : "pct_ritardo";
-  const allowed = ["pct_ritardo","in_ritardo","minuti_ritardo_tot","cancellate","soppresse"];
-  if (!allowed.includes(metric)) metric = "pct_ritardo";
-
-  let mode = "network";
-  if (state.filters.dep !== "all" && state.filters.arr === "all") mode = "from_dep_rank_arr_city";
-  if (state.filters.arr !== "all" && state.filters.dep === "all") mode = "to_arr_rank_dep_city";
-  if (state.filters.arr !== "all" && state.filters.dep !== "all") mode = "pair";
-
-  const noteEl = document.getElementById("citiesNote");
-  if (noteEl) {
-    noteEl.innerText = state.capoluoghiSet && state.capoluoghiSet.size === 0
-      ? "capoluoghi_provincia.csv non trovato, classifica su tutte le città presenti."
-      : "Classifica limitata ai capoluoghi di provincia.";
-  }
-
-  if (mode === "pair") {
-    safeSetData(state.tables.cities, []);
-    return;
-  }
+  let rows = baseStations;
+  if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, keyField));
+  if (state.filters.cat !== "all") rows = rows.filter(passCat);
+  if (useDay && hasDayFilter()) rows = rows.filter(r => passDay(r, "giorno"));
+  if (!useDay && hasDayFilter()) rows = rows.filter(r => passMonthFromDayRange(r, "mese"));
 
   const agg = new Map();
-  const initAgg = (city) => ({
-    citta: city,
+
+  for (const r of rows) {
+    const code = String(r.cod_stazione || "").trim();
+    if (!code) continue;
+
+    const coords = stationCoords(code);
+    if (!hasValidCoords(coords)) continue;
+
+    if (!agg.has(code)) agg.set(code, {
+      code,
+      coords,
+      nome: stationName(code, r.nome_stazione || ""),
+      corse_osservate: 0,
+      in_ritardo: 0,
+      minuti_ritardo_tot: 0,
+      ritardo_medio: 0,
+      p90: 0,
+      p95: 0
+    });
+
+    const a = agg.get(code);
+    a.corse_osservate += toNum(r.corse_osservate);
+    a.in_ritardo += toNum(r.in_ritardo);
+    a.minuti_ritardo_tot += toNum(r.minuti_ritardo_tot);
+    a.ritardo_medio += toNum(r.ritardo_medio) * toNum(r.corse_osservate);
+    a.p90 += toNum(r.p90) * toNum(r.corse_osservate);
+    a.p95 += toNum(r.p95) * toNum(r.corse_osservate);
+  }
+
+  const pts = Array.from(agg.values()).map(o => {
+    const n = toNum(o.corse_osservate);
+    const ritm = n > 0 ? o.ritardo_medio / n : 0;
+    const p90 = n > 0 ? o.p90 / n : 0;
+    const p95 = n > 0 ? o.p95 / n : 0;
+
+    const row = {
+      corse_osservate: n,
+      in_ritardo: toNum(o.in_ritardo),
+      minuti_ritardo_tot: toNum(o.minuti_ritardo_tot),
+      ritardo_medio: ritm,
+      p90: p90,
+      p95: p95
+    };
+
+    const v = mapMetricValue(row, metric);
+    return { ...o, v };
+  });
+
+  pts.sort((a, b) => toNum(b.v) - toNum(a.v));
+
+  const top = pts.slice(0, 200);
+
+  for (const p of top) {
+    const val = p.v;
+    const label = p.nome + "\n" + fmtFloat(val);
+    const m = L.circleMarker([p.coords.lat, p.coords.lon], {
+      radius: 6 + Math.sqrt(Math.max(0, val)) * 0.2,
+      opacity: 0.9,
+      fillOpacity: 0.6
+    }).addTo(state.map);
+
+    try { m.bindPopup(label); } catch {}
+    state.markers.push(m);
+  }
+}
+
+function isCapoluogoCity(city) {
+  const k = normalizeText(city);
+  return state.capoluoghiSet.has(k);
+}
+
+function initAgg(city) {
+  return {
+    city,
     corse_osservate: 0,
     in_ritardo: 0,
     minuti_ritardo_tot: 0,
     cancellate: 0,
     soppresse: 0,
     pct_ritardo: 0
-  });
+  };
+}
 
-  if (mode === "network") {
-    const useDay = (hasDayFilter() || hasWeekdayFilter()) && state.stationsDayNode.length > 0 && state.filters.dep === "all" && state.filters.arr === "all";
+function renderCities() {
+  const metricSel = document.getElementById("citiesMetricSel");
+  const metric = metricSel ? String(metricSel.value || "pct_ritardo") : "pct_ritardo";
+
+  const minSel = document.getElementById("citiesMinSel");
+  const minN = minSel ? Number(minSel.value || 50) : 50;
+
+  const modeSel = document.getElementById("citiesModeSel");
+  const mode = modeSel ? String(modeSel.value || "from_station_node") : "from_station_node";
+
+  const agg = new Map();
+
+  if (mode === "from_station_node") {
+    const useDay = hasDayFilter() && state.stationsDayNode.length > 0;
     const base = useDay ? state.stationsDayNode : state.stationsMonthNode;
     const keyField = useDay ? "giorno" : "mese";
 
     let rows = base;
     if (state.filters.year !== "all") rows = rows.filter(r => passYear(r, keyField));
     if (state.filters.cat !== "all") rows = rows.filter(passCat);
-    if (useDay) {
-      if (hasDayFilter()) rows = rows.filter(r => passDay(r, "giorno"));
-      if (hasWeekdayFilter()) rows = rows.filter(r => passWeekday(r, "giorno"));
-    }
+    if (useDay && hasDayFilter()) rows = rows.filter(r => passDay(r, "giorno"));
     if (!useDay && hasDayFilter()) rows = rows.filter(r => passMonthFromDayRange(r, "mese"));
-    if (!useDay && hasWeekdayFilter()) rows = [];
 
     for (const r of rows) {
       const n = toNum(r.corse_osservate);
       if (n <= 0) continue;
 
       const code = String(r.cod_stazione || "").trim();
-      const city = stationCity(code, r.nome_stazione);
+      if (!code) continue;
+
+      const city = stationCity(code, r.nome_stazione || code);
       if (!city) continue;
       if (!isCapoluogoCity(city)) continue;
 
@@ -1561,19 +1000,15 @@ function renderCities() {
       a.soppresse += toNum(r.soppresse);
     }
   } else {
-    const useDay = (hasDayFilter() || hasWeekdayFilter()) && state.odDayCat.length > 0;
+    const useDay = hasDayFilter() && state.odDayCat.length > 0;
     const base = useDay ? state.odDayCat : state.odMonthCat;
     const keyField = useDay ? "giorno" : "mese";
 
     let od = base;
     if (state.filters.year !== "all") od = od.filter(r => passYear(r, keyField));
     if (state.filters.cat !== "all") od = od.filter(passCat);
-    if (useDay) {
-      if (hasDayFilter()) od = od.filter(r => passDay(r, "giorno"));
-      if (hasWeekdayFilter()) od = od.filter(r => passWeekday(r, "giorno"));
-    }
+    if (useDay) od = od.filter(r => passDay(r, "giorno"));
     if (!useDay && hasDayFilter()) od = od.filter(r => passMonthFromDayRange(r, "mese"));
-    if (!useDay && hasWeekdayFilter()) od = [];
     if (state.filters.dep !== "all") od = od.filter(passDep);
     if (state.filters.arr !== "all") od = od.filter(passArr);
 
@@ -1622,6 +1057,98 @@ function renderAll() {
   renderTables();
   renderMap();
   renderCities();
+}
+
+async function loadAll() {
+  setMeta("Caricamento dati...");
+
+  const base = await pickDataBase();
+  state.dataBase = base;
+
+  const man = await fetchJsonOrNull(base + "manifest.json");
+  state.manifest = man || safeManifestDefaults();
+
+  if (state.manifest && state.manifest.built_at_utc) {
+    setMeta("Build: " + state.manifest.built_at_utc + " | base: " + base);
+  } else {
+    setMeta("Build: manifest non trovato | base: " + base);
+  }
+
+  const files = Array.isArray(state.manifest.gold_files) && state.manifest.gold_files.length
+    ? state.manifest.gold_files
+    : safeManifestDefaults().gold_files;
+
+  const texts = await Promise.all(files.map(f => fetchTextOrNull(base + f)));
+  const parsed = {};
+  let foundAnyGold = false;
+
+  for (let i = 0; i < files.length; i++) {
+    const txt = texts[i];
+    if (txt) {
+      parsed[files[i]] = parseCSV(txt);
+      if ((parsed[files[i]] || []).length) foundAnyGold = true;
+    } else {
+      parsed[files[i]] = [];
+    }
+  }
+
+  state.kpiDayCat = parsed["kpi_giorno_categoria.csv"] || [];
+  state.kpiMonthCat = parsed["kpi_mese_categoria.csv"] || [];
+  state.kpiDay = parsed["kpi_giorno.csv"] || [];
+  state.kpiMonth = parsed["kpi_mese.csv"] || [];
+  state.histMonthCat = parsed["hist_mese_categoria.csv"] || [];
+  state.stationsMonthNode = parsed["stazioni_mese_categoria_nodo.csv"] || [];
+  state.odMonthCat = parsed["od_mese_categoria.csv"] || [];
+
+  const extraFiles = [
+    "od_giorno_categoria.csv",
+    "stazioni_giorno_categoria_nodo.csv",
+    "hist_giorno_categoria.csv"
+  ];
+
+  const extraTexts = await Promise.all(extraFiles.map(f => fetchTextOrNull(base + f)));
+  const extraParsed = {};
+  for (let i = 0; i < extraFiles.length; i++) {
+    extraParsed[extraFiles[i]] = extraTexts[i] ? parseCSV(extraTexts[i]) : [];
+  }
+
+  state.odDayCat = extraParsed["od_giorno_categoria.csv"] || [];
+  state.stationsDayNode = extraParsed["stazioni_giorno_categoria_nodo.csv"] || [];
+  state.histDayCat = extraParsed["hist_giorno_categoria.csv"] || [];
+
+  const stTxt = await fetchTextOrNull(base + "stations_dim.csv");
+  const stRows = stTxt ? parseCSV(stTxt) : [];
+
+  state.stationsRef.clear();
+  stRows.forEach(r => {
+    const code = String(r.cod_stazione || r.codice || r.cod || "").trim();
+    if (!code) return;
+
+    const name = String(r.nome_stazione || r.nome_norm || r.nome || "").trim();
+    const lat = Number(r.lat);
+    const lon = Number(r.lon);
+    const city = String(r.citta || r.comune || r.city || r.nome_comune || "").trim();
+
+    state.stationsRef.set(code, { code, name, lat, lon, city });
+  });
+
+  const capTxt = await fetchTextOrNull(base + "capoluoghi_provincia.csv");
+  const capRows = capTxt ? parseCSV(capTxt) : [];
+  state.capoluoghiSet = new Set(
+    capRows.map(r => normalizeText(r.citta || r.capoluogo || r.nome || "")).filter(Boolean)
+  );
+
+  initFilters();
+  initDayControls();
+  initMap();
+  initTables();
+  initHistModeToggle();
+
+  requestAnimationFrame(() => renderAll());
+
+  if (!foundAnyGold) {
+    setMeta("Errore: non trovo i CSV nella cartella dati. Controlla il deploy e che pubblichi la cartella corretta.");
+  }
 }
 
 loadAll().catch(err => {
