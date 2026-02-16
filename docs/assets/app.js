@@ -1476,6 +1476,10 @@ function renderMap() {
     const code = String(r.cod_stazione || "").trim();
     if (!code) continue;
 
+    const city = stationCity(code, r.nome_stazione || code);
+    if (!city) continue;
+    if (!isCapoluogoCity(city)) continue;
+
     const coords = stationCoords(code);
     if (!coords) continue;
 
@@ -1575,8 +1579,11 @@ async function loadCapoluoghiAnyBase(primaryBase) {
   const base = ensureTrailingSlash(primaryBase);
   const tries = uniq([
     ...candidateFilePaths(base, "capoluoghi_provincia.csv"),
+    ...candidateFilePaths(base, "stations/capoluoghi_provincia.csv"),
     ...candidateFilePaths("data/", "capoluoghi_provincia.csv"),
-    ...candidateFilePaths("./data/", "capoluoghi_provincia.csv")
+    ...candidateFilePaths("./data/", "capoluoghi_provincia.csv"),
+    "data/stations/capoluoghi_provincia.csv",
+    "./data/stations/capoluoghi_provincia.csv"
   ]);
   for (const p of tries) {
     const t = await fetchTextOrNull(p);
