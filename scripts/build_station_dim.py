@@ -23,113 +23,61 @@ def _read_csv_if_exists(path: str) -> Optional[pd.DataFrame]:
 
 
 def load_station_registry_or_empty() -> pd.DataFrame:
-    p = os.path.join("data", "stations", "stations.csv")
-    if not os.path.exists(p):
-        df = pd.DataFrame({"cod_stazione": pd.Series([], dtype=str)})
-        df["nome_stazione"] = pd.Series([], dtype=str)
-        df["lat"] = pd.Series([], dtype=float)
-        df["lon"] = pd.Series([], dtype=float)
-        df["citta"] = pd.Series([], dtype=str)
-        return df
+    if not REGISTRY_PATH.exists():
+        print("Registry non trovato:", REGISTRY_PATH)
+        return pd.DataFrame(columns=["cod_stazione", "nome_stazione", "lat", "lon", "citta"])
 
-    df = pd.read_csv(p, dtype=str)
+    df = pd.read_csv(REGISTRY_PATH)
 
-    rename_map = {}
-    if "codice" in df.columns and "cod_stazione" not in df.columns:
-        rename_map["codice"] = "cod_stazione"
-    if "nome_norm" in df.columns and "nome_stazione" not in df.columns:
-        rename_map["nome_norm"] = "nome_stazione"
-    if rename_map:
-        df = df.rename(columns=rename_map)
+    def _first_col(cands):
+        for c in cands:
+            if c in df.columns:
+                return c
+        return None
 
-    if "cod_stazione" not in df.columns:
-        raise ValueError("station registry must contain 'cod_stazione' (or 'codice')")
+    code_col = _first_col(["cod_stazione", "codice", "cod", "code", "station_code", "id_stazione", "id"])
+    name_col = _first_col(["nome_stazione", "nome", "station_name", "name", "descrizione", "denominazione"])
+    lat_col = _first_col(["lat", "latitude", "latitudine", "y", "LAT", "LATITUDINE"])
+    lon_col = _first_col(["lon", "lng", "longitude", "longitudine", "x", "LON", "LONGITUDINE"])
+    city_col = _first_col(["citta", "comune", "city", "municipality", "town", "localita", "località", "provincia_capoluogo"])
+
+    if code_col and code_col != "cod_stazione":
+        df = df.rename(columns={code_col: "cod_stazione"})
+    if name_col and name_col != "nome_stazione":
+        df = df.rename(columns={name_col: "nome_stazione"})
+    if lat_col and lat_col != "lat":
+        df = df.rename(columns={lat_col: "lat"})
+    if lon_col and lon_col != "lon":
+        df = df.rename(columns={lon_col: "lon"})
+    if city_col and city_col != "citta":
+        df = df.rename(columns={city_col: "citta"})
+
+    for c in ["cod_stazione", "nome_stazione", "citta"]:
+        if c not in df.columns:
+            df[c] = ""
+
+    if "lat" not in df.columns:
+        df["lat"] = pd.NA
+    if "lon" not in df.columns:
+        df["lon"] = pd.NA
 
     df["cod_stazione"] = df["cod_stazione"].astype(str).str.strip()
+    df["nome_stazione"] = df["nome_stazione"].astype(str).str.strip()
+    df["citta"] = df["citta"].astype(str).str.strip()
 
-    if "nome_stazione" not in df.columns:
-        df["nome_stazione"] = ""
+    df["nome_stazione"] = df["nome_stazione"].replace({"nan": "", "NaN": "", "None": ""})
+    df["citta"] = df["citta"].replace({"nan": "", "NaN": "", "None": ""})
 
-    for c in ("lat", "lon"):
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-        else:
-            df[c] = pd.Series([pd.NA] * len(df), dtype="float64")
+    df["lat"] = pd.to_numeric(df["lat"].astype(str).str.replace(",", ".", regex=False).str.strip(), errors="coerce")
+    df["lon"] = pd.to_numeric(df["lon"].astype(str).str.replace(",", ".", regex=False).str.strip(), errors="coerce")
 
-    if "citta" not in df.columns:
-        for alt in ("comune", "city", "nome_comune", "municipality"):
-            if alt in df.columns:
-                df = df.rename(columns={alt: "citta"})
-                break
-    if "citta" not in df.columns:
-        df["citta"] = ""
+    out = df[["cod_stazione", "nome_stazione", "lat", "lon", "citta"]].copy()
+    out = out[out["cod_stazione"].astype(str).str.len() > 0]
+    out = out.drop_duplicates(subset=["cod_stazione"], keep="first")
 
-    df["nome_stazione"] = df["nome_stazione"].astype(str).fillna("").str.strip()
-    df["citta"] = df["citta"].astype(str).fillna("").str.strip()
-
-    keep = ["cod_stazione", "nome_stazione", "lat", "lon", "citta"]
-    for k in keep:
-        if k not in df.columns:
-            df[k] = "" if k in ("cod_stazione", "nome_stazione", "citta") else pd.NA
-
-    return df[keep].copy()
+    return out
 
 
-def _pick_col(cols: list[str], must_contain: str) -> Optional[str]:
-    needle = must_contain.lower()
-    for c in cols:
-        if needle in c.lower():
-            return c
-    return None
-
-
-def build_capoluoghi_provincia_csv(cfg: Dict[str, Any]) -> pd.DataFrame:
-    local_path = os.path.join("data", "stations", "capoluoghi_provincia.csv")
-    if os.path.exists(local_path):
-        df = pd.read_csv(local_path, dtype=str)
-        if "citta" not in df.columns:
-            for alt in ("capoluogo", "nome", "comune", "city"):
-                if alt in df.columns:
-                    df = df.rename(columns={alt: "citta"})
-                    break
-        if "citta" not in df.columns:
-            raise ValueError(f"{local_path} must contain a 'citta' column")
-        df["citta"] = df["citta"].astype(str).str.strip()
-        df = df[df["citta"] != ""].drop_duplicates(subset=["citta"]).sort_values("citta")
-        return df[["citta"]].reset_index(drop=True)
-
-    net = cfg.get("network", {})
-    timeout = int(net.get("timeout_seconds", 20))
-    max_retries = int(net.get("max_retries", 3))
-    backoff = int(net.get("backoff_factor", 2))
-
-    try:
-        r = http_get_with_retry(
-            ISTAT_COMUNI_URL,
-            timeout=timeout,
-            max_retries=max_retries,
-            backoff_factor=backoff,
-        )
-        raw = r.content.decode("utf-8", errors="replace")
-        df = pd.read_csv(io.StringIO(raw), sep=";", dtype=str)
-        df.columns = [str(c).strip() for c in df.columns]
-
-        col_city = _pick_col(list(df.columns), "Denominazione in italiano") or _pick_col(list(df.columns), "Denominazione in Italiano")
-        col_flag = _pick_col(list(df.columns), "Flag Comune capoluogo di provincia") or _pick_col(list(df.columns), "capoluogo di provincia")
-
-        if not col_city or not col_flag:
-            raise ValueError("ISTAT columns not found (city name or capoluogo flag)")
-
-        flag = df[col_flag].astype(str).str.strip()
-        is_cap = flag.isin(["1", "SI", "SÌ", "TRUE", "True", "true", "Y", "y"])
-
-        out = df.loc[is_cap, [col_city]].rename(columns={col_city: "citta"})
-        out["citta"] = out["citta"].astype(str).str.strip()
-        out = out[out["citta"] != ""].drop_duplicates(subset=["citta"]).sort_values("citta").reset_index(drop=True)
-
-        ensure_dir(os.path.dirname(local_path))
-        out.to_csv(local_path, index=False)
-        return out
 
     except Exception as e:
         fallback = [
