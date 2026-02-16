@@ -1232,7 +1232,8 @@ function renderHist() {
   const toggle = document.getElementById("histModeToggle");
   const showPct = !!(toggle && toggle.checked);
 
-  const useDay = useDailyAggregation() && state.data.histDayCat && state.data.histDayCat.length > 0;
+  const haveDayHist = state.data.histDayCat && state.data.histDayCat.length > 0;
+  const useDay = haveDayHist && (hasDayFilter() || hasWeekdayFilter() || hasTimeFilter());
   const base = useDay ? state.data.histDayCat : state.data.histMonthCat;
   const keyField = useDay ? "giorno" : "mese";
 
@@ -1288,9 +1289,27 @@ function renderHist() {
   );
 }
 
-function isCapoluogoCity(cityName) {
-  if (!state.capoluoghiSet || state.capoluoghiSet.size === 0) return true;
-  return state.capoluoghiSet.has(normalizeText(cityName));
+function capoluogoKey(cityName) {
+  const name = normalizeText(cityName);
+  if (!name) return "";
+  if (!state.capoluoghiSet || state.capoluoghiSet.size === 0) return name;
+  if (state.capoluoghiSet.has(name)) return name;
+
+  for (const cap of state.capoluoghiSet) {
+    if (name.startsWith(cap + " ") || name.startsWith(cap + "-") || name.startsWith(cap + "'")) return cap;
+  }
+
+  return "";
+}
+
+
+function prettyCityName(cityKey, fallback) {
+  const raw = String(fallback || "").trim();
+  if (raw && normalizeText(raw) === cityKey) return raw;
+
+  return String(cityKey || "")
+    .toLowerCase()
+    .replace(/\b([a-zàèéìòù])/g, (m) => m.toUpperCase());
 }
 
 function renderStationsTable() {
@@ -1409,12 +1428,13 @@ function renderCitiesTable() {
 
     const city = stationCity(code, r.nome_stazione || code);
     if (!city) continue;
-    if (!isCapoluogoCity(city)) continue;
 
-    const k = normalizeText(city);
+    const k = capoluogoKey(city);
+    if (!k) continue;
+
     if (!agg.has(k)) {
       agg.set(k, {
-        city,
+        city: prettyCityName(k, city),
         corse_osservate: 0,
         in_ritardo: 0,
         minuti_ritardo_tot: 0,
@@ -1476,45 +1496,73 @@ function renderMap() {
     const code = String(r.cod_stazione || "").trim();
     if (!code) continue;
 
+    const city = stationCity(code, r.nome_stazione || code);
+    if (!city) continue;
+
+    const cityKey = capoluogoKey(city);
+    if (!cityKey) continue;
+
     const coords = stationCoords(code);
     if (!coords) continue;
 
-    if (!agg.has(code)) {
-      agg.set(code, {
-        code,
-        coords,
-        nome: stationName(code, r.nome_stazione || ""),
+    if (!agg.has(cityKey)) {
+      agg.set(cityKey, {
+        cityKey,
+        nome: prettyCityName(cityKey, city),
         corse_osservate: 0,
         in_ritardo: 0,
         minuti_ritardo_tot: 0,
         soppresse: 0,
-        cancellate_tot: 0
+        cancellate_tot: 0,
+        lat_weighted_sum: 0,
+        lon_weighted_sum: 0,
+        weight_sum: 0
       });
     }
 
-    const a = agg.get(code);
-    a.corse_osservate += toNum(r.corse_osservate);
+    const a = agg.get(cityKey);
+    const corse = toNum(r.corse_osservate);
+    const weight = Math.max(1, corse);
+
+    a.corse_osservate += corse;
     a.in_ritardo += toNum(r.in_ritardo);
     a.minuti_ritardo_tot += toNum(r.minuti_ritardo_tot);
     a.soppresse += toNum(r.soppresse);
     const canc = r.cancellate_tot !== undefined && r.cancellate_tot !== "" ? r.cancellate_tot : r.cancellate;
     a.cancellate_tot += toNum(canc);
+
+    a.lat_weighted_sum += toNum(coords.lat) * weight;
+    a.lon_weighted_sum += toNum(coords.lon) * weight;
+    a.weight_sum += weight;
   }
 
-  const pts = Array.from(agg.values()).map((o) => {
-    const v = mapMetricValue(o);
-    return { ...o, v };
-  });
+  const pts = Array.from(agg.values())
+    .map((o) => {
+      const w = o.weight_sum > 0 ? o.weight_sum : 1;
+      const v = mapMetricValue(o);
+      return {
+        ...o,
+        coords: { lat: o.lat_weighted_sum / w, lon: o.lon_weighted_sum / w },
+        v
+      };
+    })
+    .filter((o) => Number.isFinite(o.coords.lat) && Number.isFinite(o.coords.lon));
 
   pts.sort((a, b) => toNum(b.v) - toNum(a.v));
   const top = pts.slice(0, 250);
 
+  const values = top.map((p) => Math.max(0, Number(p.v) || 0));
+  const maxValue = values.length ? Math.max(...values) : 0;
+  const minRadius = 5;
+  const maxRadius = 22;
+
   const bounds = [];
   for (const p of top) {
-    const val = Number(p.v) || 0;
+    const val = Math.max(0, Number(p.v) || 0);
     const label = p.nome + "<br>" + metricLabel() + ": " + fmtFloat(val);
 
-    const radius = 5 + Math.sqrt(Math.max(0, val)) * 0.25;
+    const ratio = maxValue > 0 ? Math.sqrt(val / maxValue) : 0;
+    const radius = minRadius + ratio * (maxRadius - minRadius);
 
     const m = L.circleMarker([p.coords.lat, p.coords.lon], {
       radius,
