@@ -1476,6 +1476,10 @@ function renderMap() {
     const code = String(r.cod_stazione || "").trim();
     if (!code) continue;
 
+    const city = stationCity(code, r.nome_stazione || code);
+    if (!city) continue;
+    if (!isCapoluogoCity(city)) continue;
+
     const coords = stationCoords(code);
     if (!coords) continue;
 
