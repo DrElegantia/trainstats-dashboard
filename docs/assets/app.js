@@ -9,12 +9,7 @@ window.addEventListener("error", (e) => {
 window.addEventListener("unhandledrejection", (e) => {
   const r = e && e.reason ? e.reason : "";
   const msg = r && r.message ? r.message : String(r);
-
-  if (msg && msg.includes("verticalFillMode")) {
-    console.warn("Promise rejection Tabulator ignorata:", msg);
-    return;
-  }
-
+  if (msg && msg.includes("verticalFillMode")) return;
   try {
     const el = document.getElementById("metaBox");
     if (el) el.innerText = "Promise rejection: " + msg;
@@ -53,14 +48,7 @@ async function fetchJsonOrNull(path) {
 const DATA_BASE_CANDIDATES = ["data/", "docs/data/", "site/data/"];
 
 async function pickDataBase() {
-  const probes = [
-    "manifest.json",
-    "kpi_mese_categoria.csv",
-    "kpi_giorno_categoria.csv",
-    "kpi_mese.csv",
-    "kpi_giorno.csv"
-  ];
-
+  const probes = ["manifest.json", "kpi_mese_categoria.csv", "kpi_giorno_categoria.csv", "kpi_mese.csv", "kpi_giorno.csv"];
   for (const base of DATA_BASE_CANDIDATES) {
     for (const p of probes) {
       const t = await fetchTextOrNull(base + p);
@@ -74,23 +62,19 @@ function detectDelimiter(line) {
   const s = String(line || "");
   let comma = 0, semi = 0, tab = 0;
   let inQ = false;
-
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
-
     if (ch === '"') {
       if (inQ && s[i + 1] === '"') i++;
       else inQ = !inQ;
       continue;
     }
-
     if (!inQ) {
       if (ch === ",") comma++;
       else if (ch === ";") semi++;
       else if (ch === "\t") tab++;
     }
   }
-
   if (semi > comma && semi >= tab) return ";";
   if (tab > comma && tab > semi) return "\t";
   return ",";
@@ -101,10 +85,8 @@ function splitCSVLine(line, delim) {
   const out = [];
   let cur = "";
   let inQ = false;
-
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
-
     if (ch === '"') {
       if (inQ && line[i + 1] === '"') {
         cur += '"';
@@ -114,16 +96,13 @@ function splitCSVLine(line, delim) {
       }
       continue;
     }
-
     if (ch === d && !inQ) {
       out.push(cur);
       cur = "";
       continue;
     }
-
     cur += ch;
   }
-
   out.push(cur);
   return out;
 }
@@ -131,18 +110,14 @@ function splitCSVLine(line, delim) {
 function parseCSV(text) {
   const t = String(text || "").trim();
   if (!t) return [];
-
   const lines = t.split(/\r?\n/).filter((x) => String(x || "").length);
   if (lines.length <= 1) return [];
-
   const delim = detectDelimiter(lines[0]);
   const header = splitCSVLine(lines[0], delim).map((x) => String(x || "").trim());
-
   const rows = [];
   for (let i = 1; i < lines.length; i++) {
     const line = String(lines[i] || "");
     if (!line.trim()) continue;
-
     const cols = splitCSVLine(line, delim);
     const obj = {};
     for (let j = 0; j < header.length; j++) obj[header[j]] = cols[j] ?? "";
@@ -326,9 +301,7 @@ function fillStationSelect(selectEl, items, query) {
 
 function ensureSearchInput(selectEl, inputId, placeholder, items) {
   if (!selectEl || !selectEl.parentNode) return;
-
   let input = document.getElementById(inputId);
-
   if (!input) {
     input = document.createElement("input");
     input.id = inputId;
@@ -339,7 +312,6 @@ function ensureSearchInput(selectEl, inputId, placeholder, items) {
     input.style.margin = "0 0 6px 0";
     selectEl.parentNode.insertBefore(input, selectEl);
   }
-
   input.oninput = () => fillStationSelect(selectEl, items, input.value);
 }
 
@@ -434,25 +406,20 @@ function extractTimeFromRow(row) {
     row.time ??
     "";
   if (v === "" || v === null || typeof v === "undefined") return null;
-
   if (typeof v === "number" && Number.isFinite(v)) {
     const hh = Math.max(0, Math.min(23, Math.floor(v)));
     return hh * 60;
   }
-
   const mins = parseTimeToMinutes(v);
   return mins;
 }
 
 function passTime(row) {
   if (!hasTimeFilter()) return true;
-
   const fromMins = parseTimeToMinutes(state.filters.time_from || "00:00");
   const toMins = parseTimeToMinutes(state.filters.time_to || "23:59");
-
   const mins = extractTimeFromRow(row);
   if (mins === null) return true;
-
   return timeInRange(mins, fromMins, toMins);
 }
 
@@ -520,8 +487,9 @@ function initTables() {
         { title: "Codice", field: "cod_stazione", sorter: "string", width: 110 },
         { title: "Corse", field: "corse_osservate", sorter: "number", hozAlign: "right", width: 110 },
         { title: "% ritardo", field: "pct_ritardo", sorter: "number", hozAlign: "right", width: 110, formatter: (c) => fmtFloat(c.getValue()) },
+        { title: "In ritardo", field: "in_ritardo", sorter: "number", hozAlign: "right", width: 120 },
         { title: "Minuti", field: "minuti_ritardo_tot", sorter: "number", hozAlign: "right", width: 130 },
-        { title: "Cancellati", field: "cancellate", sorter: "number", hozAlign: "right", width: 110 },
+        { title: "Cancellati", field: "cancellate_tot", sorter: "number", hozAlign: "right", width: 120 },
         { title: "Soppressi", field: "soppresse", sorter: "number", hozAlign: "right", width: 110 }
       ]
     });
@@ -538,6 +506,7 @@ function initTables() {
         { title: "Arrivo", field: "nome_arrivo", sorter: "string" },
         { title: "Corse", field: "corse_osservate", sorter: "number", hozAlign: "right", width: 110 },
         { title: "% ritardo", field: "pct_ritardo", sorter: "number", hozAlign: "right", width: 110, formatter: (c) => fmtFloat(c.getValue()) },
+        { title: "In ritardo", field: "in_ritardo", sorter: "number", hozAlign: "right", width: 120 },
         { title: "Minuti", field: "minuti_ritardo_tot", sorter: "number", hozAlign: "right", width: 130 }
       ]
     });
@@ -553,8 +522,9 @@ function initTables() {
         { title: "Città", field: "city", sorter: "string" },
         { title: "Corse", field: "corse_osservate", sorter: "number", hozAlign: "right", width: 110 },
         { title: "% ritardo", field: "pct_ritardo", sorter: "number", hozAlign: "right", width: 110, formatter: (c) => fmtFloat(c.getValue()) },
+        { title: "In ritardo", field: "in_ritardo", sorter: "number", hozAlign: "right", width: 120 },
         { title: "Minuti", field: "minuti_ritardo_tot", sorter: "number", hozAlign: "right", width: 130 },
-        { title: "Cancellati", field: "cancellate", sorter: "number", hozAlign: "right", width: 110 },
+        { title: "Cancellati", field: "cancellate_tot", sorter: "number", hozAlign: "right", width: 120 },
         { title: "Soppressi", field: "soppresse", sorter: "number", hozAlign: "right", width: 110 }
       ]
     });
@@ -564,9 +534,7 @@ function initTables() {
 function initMap() {
   const mapEl = firstEl(["map", "mapStations", "stationsMap"]);
   if (!mapEl) return;
-
   if (typeof L !== "object" || typeof L.map !== "function") return;
-
   if (state.map) return;
 
   state.map = L.map(mapEl.id, { center: [42.5, 12.5], zoom: 6, zoomSnap: 0.5 });
@@ -575,6 +543,12 @@ function initMap() {
     attribution: "&copy; OpenStreetMap contributors",
     maxZoom: 18
   }).addTo(state.map);
+
+  setTimeout(() => {
+    try {
+      state.map.invalidateSize();
+    } catch {}
+  }, 150);
 }
 
 function clearMarkers() {
@@ -655,7 +629,6 @@ function initDayWeekTimeControls() {
   wdWrap.style.gap = "6px";
 
   ensureWeekdays();
-
   const wdLabels = ["Lu", "Ma", "Me", "Gi", "Ve", "Sa", "Do"];
 
   const refreshWdStyles = () => {
@@ -831,19 +804,8 @@ function initFilters() {
     };
   }
 
-  const deps = uniq(
-    [
-      ...(state.data.odMonthCat || []).map((r) => r.cod_partenza),
-      ...(state.data.odDayCat || []).map((r) => r.cod_partenza)
-    ].filter(Boolean)
-  );
-
-  const arrs = uniq(
-    [
-      ...(state.data.odMonthCat || []).map((r) => r.cod_arrivo),
-      ...(state.data.odDayCat || []).map((r) => r.cod_arrivo)
-    ].filter(Boolean)
-  );
+  const deps = uniq([...(state.data.odMonthCat || []).map((r) => r.cod_partenza), ...(state.data.odDayCat || []).map((r) => r.cod_partenza)].filter(Boolean));
+  const arrs = uniq([...(state.data.odMonthCat || []).map((r) => r.cod_arrivo), ...(state.data.odDayCat || []).map((r) => r.cod_arrivo)].filter(Boolean));
 
   const depItems = buildStationItems(deps);
   const arrItems = buildStationItems(arrs);
@@ -870,7 +832,10 @@ function initFilters() {
 
   if (mapMetricSel) {
     if (!mapMetricSel.value) mapMetricSel.value = "pct_ritardo";
-    mapMetricSel.onchange = () => renderMap();
+    mapMetricSel.onchange = () => {
+      renderSeries();
+      renderMap();
+    };
   }
 
   if (resetBtn) {
@@ -912,7 +877,6 @@ function initFilters() {
 
 function ensureHistToggleStyles() {
   if (document.getElementById("histToggleStyles")) return;
-
   const style = document.createElement("style");
   style.id = "histToggleStyles";
   style.textContent = `
@@ -934,7 +898,6 @@ function updateHistToggleUI() {
   const left = document.getElementById("histModeTextCount");
   const right = document.getElementById("histModeTextPct");
   if (!t || !left || !right) return;
-
   if (t.checked) {
     left.classList.remove("active");
     right.classList.add("active");
@@ -1007,33 +970,87 @@ function useDailyAggregation() {
   return false;
 }
 
+function getMetricMode() {
+  const sel = firstEl(["mapMetricSel", "mapSel", "mappaSel"]);
+  const v = sel ? String(sel.value || "") : "";
+  if (v === "in_ritardo" || v === "conteggio_ritardo") return "count_late";
+  if (v === "corse_osservate") return "count_total";
+  if (v === "minuti_ritardo_tot") return "minutes";
+  return "pct";
+}
+
+function metricLabel() {
+  const mode = getMetricMode();
+  if (mode === "count_late") return "In ritardo";
+  if (mode === "count_total") return "Corse";
+  if (mode === "minutes") return "Minuti";
+  return "% in ritardo";
+}
+
+function computeValue(corse, ritardo, minuti) {
+  const mode = getMetricMode();
+  if (mode === "count_late") return ritardo;
+  if (mode === "count_total") return corse;
+  if (mode === "minutes") return minuti;
+  return corse > 0 ? (ritardo / corse) * 100 : 0;
+}
+
 function renderKPI() {
   const useDay = useDailyAggregation();
   const base = useDay ? state.data.kpiDayCat : state.data.kpiMonthCat;
   const keyField = useDay ? "giorno" : "mese";
 
   let rows = base || [];
-
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
 
-  if (useDay) {
-    rows = rows.filter((r) => passDayKey(r, "giorno"));
-  } else {
-    if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
-  }
+  if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
+  else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
 
   const total = rows.reduce((a, r) => a + toNum(r.corse_osservate), 0);
   const late = rows.reduce((a, r) => a + toNum(r.in_ritardo), 0);
   const mins = rows.reduce((a, r) => a + toNum(r.minuti_ritardo_tot), 0);
-  const canc = rows.reduce((a, r) => a + toNum(r.cancellate), 0);
+
+  const canc = rows.reduce((a, r) => {
+    const v = r.cancellate_tot !== undefined && r.cancellate_tot !== "" ? r.cancellate_tot : r.cancellate;
+    return a + toNum(v);
+  }, 0);
+
   const sopp = rows.reduce((a, r) => a + toNum(r.soppresse), 0);
 
-  setTextByIds(["cardTotal", "kpiTotal", "kpiCorse", "totalRuns"], fmtInt(total));
-  setTextByIds(["cardLate", "kpiLate", "kpiRitardo", "lateRuns"], fmtInt(late));
-  setTextByIds(["cardMin", "kpiMinutes", "kpiMinuti", "delayMinutes"], fmtInt(mins));
-  setTextByIds(["cardCanc", "kpiCancelled", "kpiCancellati"], fmtInt(canc));
-  setTextByIds(["cardSopp", "kpiSuppressed", "kpiSoppressi"], fmtInt(sopp));
+  setTextByIds(["cardTotal", "kpiTotal", "kpiCorse", "totalRuns", "corseOsservate", "corse_osservate"], fmtInt(total));
+  setTextByIds(["cardLate", "kpiLate", "kpiRitardo", "lateRuns", "inRitardo", "in_ritardo"], fmtInt(late));
+
+  setTextByIds(
+    [
+      "cardMin",
+      "kpiMinutes",
+      "kpiMinuti",
+      "delayMinutes",
+      "kpiLateMin",
+      "kpiDelayMinutes",
+      "kpiMinTotRitardo",
+      "minutiTotali",
+      "minuti_totali_ritardo",
+      "minutiRitardoTotali",
+      "minutesTotal"
+    ],
+    fmtInt(mins)
+  );
+
+  setTextByIds(["cardCanc", "kpiCancelled", "kpiCancellati", "cancellati", "cancellate"], fmtInt(canc));
+  setTextByIds(["cardSopp", "kpiSuppressed", "kpiSoppressi", "soppressi", "soppresse"], fmtInt(sopp));
+
+  if (!firstEl(["cardMin", "kpiMinutes", "kpiMinuti", "delayMinutes", "kpiLateMin", "kpiDelayMinutes", "kpiMinTotRitardo"])) {
+    try {
+      const all = Array.from(document.querySelectorAll("*"));
+      const target = all.find((n) => n && n.childNodes && n.childNodes.length === 1 && String(n.textContent || "").trim() === "Minuti totali di ritardo");
+      if (target && target.parentElement) {
+        const num = target.parentElement.querySelector("div,span,strong,h1,h2,h3,h4");
+        if (num) num.innerText = fmtInt(mins);
+      }
+    } catch {}
+  }
 }
 
 function seriesDaily() {
@@ -1045,20 +1062,19 @@ function seriesDaily() {
   if (hasDayFilter() || hasWeekdayFilter() || hasTimeFilter()) rows = rows.filter((r) => passDayKey(r, "giorno"));
 
   const by = new Map();
-
   for (const r of rows) {
     const day = String(r.giorno || "").slice(0, 10);
     if (!day) continue;
-
-    if (!by.has(day)) by.set(day, { giorno: day, corse: 0, rit: 0 });
+    if (!by.has(day)) by.set(day, { key: day, corse: 0, rit: 0, min: 0 });
     const o = by.get(day);
     o.corse += toNum(r.corse_osservate);
     o.rit += toNum(r.in_ritardo);
+    o.min += toNum(r.minuti_ritardo_tot);
   }
 
-  const out = Array.from(by.values()).sort((a, b) => String(a.giorno).localeCompare(String(b.giorno)));
-  const x = out.map((o) => o.giorno);
-  const y = out.map((o) => (o.corse > 0 ? (o.rit / o.corse) * 100 : 0));
+  const out = Array.from(by.values()).sort((a, b) => String(a.key).localeCompare(String(b.key)));
+  const x = out.map((o) => o.key);
+  const y = out.map((o) => computeValue(o.corse, o.rit, o.min));
 
   return { x, y };
 }
@@ -1072,20 +1088,19 @@ function seriesMonthly() {
   if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
 
   const by = new Map();
-
   for (const r of rows) {
     const m = String(r.mese || "").slice(0, 7);
     if (!m) continue;
-
-    if (!by.has(m)) by.set(m, { mese: m, corse: 0, rit: 0 });
+    if (!by.has(m)) by.set(m, { key: m, corse: 0, rit: 0, min: 0 });
     const o = by.get(m);
     o.corse += toNum(r.corse_osservate);
     o.rit += toNum(r.in_ritardo);
+    o.min += toNum(r.minuti_ritardo_tot);
   }
 
-  const out = Array.from(by.values()).sort((a, b) => String(a.mese).localeCompare(String(b.mese)));
-  const x = out.map((o) => o.mese);
-  const y = out.map((o) => (o.corse > 0 ? (o.rit / o.corse) * 100 : 0));
+  const out = Array.from(by.values()).sort((a, b) => String(a.key).localeCompare(String(b.key)));
+  const x = out.map((o) => o.key);
+  const y = out.map((o) => computeValue(o.corse, o.rit, o.min));
 
   return { x, y };
 }
@@ -1099,21 +1114,15 @@ function renderSeries() {
   const d = seriesDaily();
   const m = seriesMonthly();
 
+  const yTitle = metricLabel();
+
   if (dEl) {
     Plotly.react(
       dEl,
-      [
-        {
-          x: d.x,
-          y: d.y,
-          type: "scatter",
-          mode: "lines+markers",
-          name: "% in ritardo"
-        }
-      ],
+      [{ x: d.x, y: d.y, type: "scatter", mode: "lines+markers", name: yTitle }],
       {
         margin: { l: 50, r: 20, t: 10, b: 50 },
-        yaxis: { title: "% in ritardo", rangemode: "tozero" },
+        yaxis: { title: yTitle, rangemode: "tozero" },
         xaxis: { type: "category" },
         paper_bgcolor: "rgba(0,0,0,0)",
         plot_bgcolor: "rgba(0,0,0,0)",
@@ -1126,18 +1135,10 @@ function renderSeries() {
   if (mEl) {
     Plotly.react(
       mEl,
-      [
-        {
-          x: m.x,
-          y: m.y,
-          type: "scatter",
-          mode: "lines+markers",
-          name: "% in ritardo"
-        }
-      ],
+      [{ x: m.x, y: m.y, type: "scatter", mode: "lines+markers", name: yTitle }],
       {
         margin: { l: 50, r: 20, t: 10, b: 50 },
-        yaxis: { title: "% in ritardo", rangemode: "tozero" },
+        yaxis: { title: yTitle, rangemode: "tozero" },
         xaxis: { type: "category" },
         paper_bgcolor: "rgba(0,0,0,0)",
         plot_bgcolor: "rgba(0,0,0,0)",
@@ -1172,11 +1173,8 @@ function renderHist() {
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
 
-  if (useDay) {
-    rows = rows.filter((r) => passDayKey(r, "giorno"));
-  } else {
-    if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
-  }
+  if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
+  else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
 
   const byBucket = new Map();
   let total = 0;
@@ -1203,20 +1201,12 @@ function renderHist() {
     const obj = byBucket.get(key);
     const c = obj ? obj.count : 0;
     x.push(lab);
-    if (!showPct) y.push(c);
-    else y.push(total > 0 ? (c / total) * 100 : 0);
+    y.push(showPct ? (total > 0 ? (c / total) * 100 : 0) : c);
   }
 
   Plotly.react(
     chart,
-    [
-      {
-        x,
-        y,
-        type: "bar",
-        name: showPct ? "%" : "Conteggio"
-      }
-    ],
+    [{ x, y, type: "bar", name: showPct ? "%" : "Conteggio" }],
     {
       margin: { l: 50, r: 20, t: 10, b: 70 },
       yaxis: { title: showPct ? "%" : "Conteggio", rangemode: "tozero" },
@@ -1229,6 +1219,11 @@ function renderHist() {
   );
 }
 
+function isCapoluogoCity(cityName) {
+  if (!state.capoluoghiSet || state.capoluoghiSet.size === 0) return true;
+  return state.capoluoghiSet.has(normalizeText(cityName));
+}
+
 function renderStationsTable() {
   const useDay = useDailyAggregation() && state.data.stationsDayNode && state.data.stationsDayNode.length > 0;
   const base = useDay ? state.data.stationsDayNode : state.data.stationsMonthNode;
@@ -1239,11 +1234,8 @@ function renderStationsTable() {
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
 
-  if (useDay) {
-    rows = rows.filter((r) => passDayKey(r, "giorno"));
-  } else {
-    if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
-  }
+  if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
+  else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
 
   const agg = new Map();
 
@@ -1258,7 +1250,7 @@ function renderStationsTable() {
         corse_osservate: 0,
         in_ritardo: 0,
         minuti_ritardo_tot: 0,
-        cancellate: 0,
+        cancellate_tot: 0,
         soppresse: 0
       });
     }
@@ -1267,7 +1259,10 @@ function renderStationsTable() {
     a.corse_osservate += toNum(r.corse_osservate);
     a.in_ritardo += toNum(r.in_ritardo);
     a.minuti_ritardo_tot += toNum(r.minuti_ritardo_tot);
-    a.cancellate += toNum(r.cancellate);
+
+    const canc = r.cancellate_tot !== undefined && r.cancellate_tot !== "" ? r.cancellate_tot : r.cancellate;
+    a.cancellate_tot += toNum(canc);
+
     a.soppresse += toNum(r.soppresse);
   }
 
@@ -1277,9 +1272,7 @@ function renderStationsTable() {
   });
 
   out.sort((a, b) => toNum(b.pct_ritardo) - toNum(a.pct_ritardo));
-  out = out.slice(0, 200);
-
-  safeSetData(state.tables.stations, out);
+  safeSetData(state.tables.stations, out.slice(0, 200));
   try {
     if (state.tables.stations) state.tables.stations.setSort("pct_ritardo", "desc");
   } catch {}
@@ -1295,11 +1288,8 @@ function renderODTable() {
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
 
-  if (useDay) {
-    rows = rows.filter((r) => passDayKey(r, "giorno"));
-  } else {
-    if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
-  }
+  if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
+  else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
 
   if (state.filters.dep !== "all") rows = rows.filter(passDep);
   if (state.filters.arr !== "all") rows = rows.filter(passArr);
@@ -1308,20 +1298,21 @@ function renderODTable() {
     .map((r) => {
       const corse = toNum(r.corse_osservate);
       const rit = toNum(r.in_ritardo);
+      const min = toNum(r.minuti_ritardo_tot);
       return {
         cod_partenza: r.cod_partenza,
         cod_arrivo: r.cod_arrivo,
         nome_partenza: stationName(r.cod_partenza, r.nome_partenza),
         nome_arrivo: stationName(r.cod_arrivo, r.nome_arrivo),
         corse_osservate: corse,
+        in_ritardo: rit,
         pct_ritardo: corse > 0 ? (rit / corse) * 100 : 0,
-        minuti_ritardo_tot: toNum(r.minuti_ritardo_tot)
+        minuti_ritardo_tot: min
       };
     })
     .filter((r) => r.corse_osservate > 0);
 
   out.sort((a, b) => toNum(b.pct_ritardo) - toNum(a.pct_ritardo));
-
   safeSetData(state.tables.od, out.slice(0, 200));
   try {
     if (state.tables.od) state.tables.od.setSort("pct_ritardo", "desc");
@@ -1338,11 +1329,8 @@ function renderCitiesTable() {
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
 
-  if (useDay) {
-    rows = rows.filter((r) => passDayKey(r, "giorno"));
-  } else {
-    if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
-  }
+  if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
+  else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
 
   const agg = new Map();
 
@@ -1361,7 +1349,7 @@ function renderCitiesTable() {
         corse_osservate: 0,
         in_ritardo: 0,
         minuti_ritardo_tot: 0,
-        cancellate: 0,
+        cancellate_tot: 0,
         soppresse: 0
       });
     }
@@ -1370,7 +1358,10 @@ function renderCitiesTable() {
     a.corse_osservate += toNum(r.corse_osservate);
     a.in_ritardo += toNum(r.in_ritardo);
     a.minuti_ritardo_tot += toNum(r.minuti_ritardo_tot);
-    a.cancellate += toNum(r.cancellate);
+
+    const canc = r.cancellate_tot !== undefined && r.cancellate_tot !== "" ? r.cancellate_tot : r.cancellate;
+    a.cancellate_tot += toNum(canc);
+
     a.soppresse += toNum(r.soppresse);
   }
 
@@ -1378,44 +1369,23 @@ function renderCitiesTable() {
   out.forEach((o) => (o.pct_ritardo = o.corse_osservate > 0 ? (o.in_ritardo / o.corse_osservate) * 100 : 0));
 
   out.sort((a, b) => toNum(b.pct_ritardo) - toNum(a.pct_ritardo));
-
   safeSetData(state.tables.cities, out.slice(0, 80));
   try {
     if (state.tables.cities) state.tables.cities.setSort("pct_ritardo", "desc");
   } catch {}
 }
 
-function isCapoluogoCity(cityName) {
-  if (!state.capoluoghiSet || state.capoluoghiSet.size === 0) return true;
-  return state.capoluoghiSet.has(normalizeText(cityName));
-}
-
-function getMapMetric() {
-  const sel = firstEl(["mapMetricSel", "mapSel", "mappaSel"]);
-  if (!sel) return "pct_ritardo";
-  return String(sel.value || "pct_ritardo");
-}
-
-function mapMetricValue(row, metric) {
-  if (!row) return 0;
-  if (metric === "pct_ritardo") {
-    const n = toNum(row.corse_osservate);
-    const d = toNum(row.in_ritardo);
-    return n > 0 ? (d / n) * 100 : 0;
-  }
-  if (metric === "minuti_ritardo_tot") return toNum(row.minuti_ritardo_tot);
-  if (metric === "ritardo_medio") return toNum(row.ritardo_medio);
-  if (metric === "p90") return toNum(row.p90);
-  if (metric === "p95") return toNum(row.p95);
-  return 0;
+function mapMetricValue(row) {
+  const corse = toNum(row.corse_osservate);
+  const rit = toNum(row.in_ritardo);
+  const min = toNum(row.minuti_ritardo_tot);
+  return computeValue(corse, rit, min);
 }
 
 function renderMap() {
   if (!state.map) return;
 
   clearMarkers();
-
-  const metric = getMapMetric();
 
   const useDay = useDailyAggregation() && state.data.stationsDayNode && state.data.stationsDayNode.length > 0;
   const base = useDay ? state.data.stationsDayNode : state.data.stationsMonthNode;
@@ -1426,11 +1396,8 @@ function renderMap() {
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
 
-  if (useDay) {
-    rows = rows.filter((r) => passDayKey(r, "giorno"));
-  } else {
-    if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
-  }
+  if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
+  else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
 
   const agg = new Map();
 
@@ -1448,44 +1415,28 @@ function renderMap() {
         nome: stationName(code, r.nome_stazione || ""),
         corse_osservate: 0,
         in_ritardo: 0,
-        minuti_ritardo_tot: 0,
-        ritardo_medio_w: 0,
-        p90_w: 0,
-        p95_w: 0
+        minuti_ritardo_tot: 0
       });
     }
 
     const a = agg.get(code);
-    const n = toNum(r.corse_osservate);
-    a.corse_osservate += n;
+    a.corse_osservate += toNum(r.corse_osservate);
     a.in_ritardo += toNum(r.in_ritardo);
     a.minuti_ritardo_tot += toNum(r.minuti_ritardo_tot);
-    a.ritardo_medio_w += toNum(r.ritardo_medio) * n;
-    a.p90_w += toNum(r.p90) * n;
-    a.p95_w += toNum(r.p95) * n;
   }
 
   const pts = Array.from(agg.values()).map((o) => {
-    const n = toNum(o.corse_osservate);
-    const row = {
-      corse_osservate: n,
-      in_ritardo: toNum(o.in_ritardo),
-      minuti_ritardo_tot: toNum(o.minuti_ritardo_tot),
-      ritardo_medio: n > 0 ? o.ritardo_medio_w / n : 0,
-      p90: n > 0 ? o.p90_w / n : 0,
-      p95: n > 0 ? o.p95_w / n : 0
-    };
-    const v = mapMetricValue(row, metric);
+    const v = mapMetricValue(o);
     return { ...o, v };
   });
 
   pts.sort((a, b) => toNum(b.v) - toNum(a.v));
-
   const top = pts.slice(0, 250);
 
+  const bounds = [];
   for (const p of top) {
     const val = Number(p.v) || 0;
-    const label = p.nome + "<br>" + fmtFloat(val);
+    const label = p.nome + "<br>" + metricLabel() + ": " + fmtFloat(val);
 
     const radius = 5 + Math.sqrt(Math.max(0, val)) * 0.25;
 
@@ -1500,7 +1451,20 @@ function renderMap() {
     } catch {}
 
     state.markers.push(m);
+    bounds.push([p.coords.lat, p.coords.lon]);
   }
+
+  if (bounds.length > 3) {
+    try {
+      state.map.fitBounds(bounds, { padding: [20, 20] });
+    } catch {}
+  }
+
+  setTimeout(() => {
+    try {
+      state.map.invalidateSize();
+    } catch {}
+  }, 100);
 }
 
 function renderTables() {
@@ -1515,6 +1479,24 @@ function renderAll() {
   renderHist();
   renderTables();
   renderMap();
+}
+
+async function loadStationsDimAnyBase(primaryBase) {
+  const tries = uniq([primaryBase + "stations_dim.csv", "docs/data/stations_dim.csv", "site/data/stations_dim.csv", "data/stations_dim.csv"]);
+  for (const p of tries) {
+    const t = await fetchTextOrNull(p);
+    if (t && String(t).trim().length > 20) return parseCSV(t);
+  }
+  return [];
+}
+
+async function loadCapoluoghiAnyBase(primaryBase) {
+  const tries = uniq([primaryBase + "capoluoghi_provincia.csv", "docs/data/capoluoghi_provincia.csv", "site/data/capoluoghi_provincia.csv", "data/capoluoghi_provincia.csv"]);
+  for (const p of tries) {
+    const t = await fetchTextOrNull(p);
+    if (t && String(t).trim().length > 5) return parseCSV(t);
+  }
+  return [];
 }
 
 async function loadAll() {
@@ -1567,8 +1549,7 @@ async function loadAll() {
   state.data.odMonthCat = parsed["od_mese_categoria.csv"] || [];
   state.data.odDayCat = parsed["od_giorno_categoria.csv"] || [];
 
-  const stTxt = await fetchTextOrNull(base + "stations_dim.csv");
-  const stRows = stTxt ? parseCSV(stTxt) : [];
+  const stRows = await loadStationsDimAnyBase(base);
 
   state.stationsRef.clear();
   stRows.forEach((r) => {
@@ -1581,8 +1562,7 @@ async function loadAll() {
     state.stationsRef.set(code, { code, name, lat, lon, city });
   });
 
-  const capTxt = await fetchTextOrNull(base + "capoluoghi_provincia.csv");
-  const capRows = capTxt ? parseCSV(capTxt) : [];
+  const capRows = await loadCapoluoghiAnyBase(base);
   state.capoluoghiSet = new Set(
     capRows
       .map((r) => normalizeText(r.citta || r.capoluogo || r.nome || r.city || ""))
