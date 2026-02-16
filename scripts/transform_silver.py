@@ -1,7 +1,9 @@
+# scripts/transform_silver.py
 from __future__ import annotations
 
 import gzip
 import os
+import re
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -98,6 +100,30 @@ def make_row_id(df: pd.DataFrame) -> pd.Series:
     return pd.util.hash_pandas_object(base, index=False).astype("uint64").astype(str)
 
 
+_re_cancel = re.compile(r"\btreno\s+cancellat[oa]\b|\bcancellat[oa]\b", re.IGNORECASE)
+_re_supp = re.compile(r"\bsoppresso\b", re.IGNORECASE)
+_re_partial = re.compile(
+    r"\bfermat[ae]\s+soppress[ae]\b|\bfermate\s+soppresse\b|\bfermata\s+soppressa\b",
+    re.IGNORECASE,
+)
+
+
+def _status_fallback_series(df: pd.DataFrame) -> pd.Series:
+    prov = df.get("provvedimenti", pd.Series([""] * len(df))).astype(str).fillna("")
+    var = df.get("variazioni", pd.Series([""] * len(df))).astype(str).fillna("")
+    hay = (prov + " | " + var).astype(str)
+
+    is_partial = hay.str.contains(_re_partial, na=False)
+    is_soppresso = prov.str.strip().str.contains(_re_supp, na=False) & (~is_partial)
+    is_cancellato = hay.str.contains(_re_cancel, na=False)
+
+    out = pd.Series([""] * len(df), index=df.index, dtype=object)
+    out[is_partial] = "parzialmente_cancellato"
+    out[is_soppresso] = "soppresso"
+    out[is_cancellato] = "cancellato"
+    return out
+
+
 def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     se = StatusEngine.from_config(cfg)
 
@@ -119,6 +145,9 @@ def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise RuntimeError(f"silver missing required columns after rename: {missing}")
 
+    df["provvedimenti"] = df.get("provvedimenti", "").astype(str).fillna("")
+    df["variazioni"] = df.get("variazioni", "").astype(str).fillna("")
+
     df["nome_partenza"] = df.get("nome_partenza", "").map(normalize_station_name)
     df["nome_arrivo"] = df.get("nome_arrivo", "").map(normalize_station_name)
 
@@ -133,7 +162,17 @@ def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     df["missing_datetime"] = df["dt_partenza_prog"].isna() | df["dt_arrivo_prog"].isna()
     df["info_mancante"] = df["missing_datetime"]
 
-    df["stato_corsa"] = df.apply(se.classify, axis=1)
+    stato_cfg = df.apply(se.classify, axis=1)
+    stato_fb = _status_fallback_series(df)
+
+    stato = stato_cfg.copy()
+    strong_fb = stato_fb.isin(["cancellato", "soppresso"])
+    stato.loc[strong_fb] = stato_fb.loc[strong_fb]
+    weak_fb = (stato_fb == "parzialmente_cancellato") & (stato == "effettuato")
+    stato.loc[weak_fb] = stato_fb.loc[weak_fb]
+    stato = stato.fillna("effettuato")
+
+    df["stato_corsa"] = stato
 
     df["_extracted_at_utc_ts"] = pd.to_datetime(df["_extracted_at_utc"], errors="coerce", utc=True)
 
