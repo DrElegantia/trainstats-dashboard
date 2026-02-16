@@ -1,9 +1,9 @@
-# scripts/build_station_dim.py
 from __future__ import annotations
 
 import os
 import re
 import json
+import unicodedata
 from datetime import datetime, timezone
 from typing import Optional, Any, Iterable, List
 
@@ -34,11 +34,40 @@ def _read_csv_any(path: str) -> pd.DataFrame:
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         first = f.readline()
     sep = _detect_delimiter(first)
-    return pd.read_csv(path, dtype=str, sep=sep)
+    return pd.read_csv(
+        path,
+        dtype=str,
+        sep=sep,
+        keep_default_na=False,
+        na_filter=False,
+    )
 
 
 def _norm_col(s: str) -> str:
-    return re.sub(r"\s+", "_", str(s or "").strip().lower())
+    t = str(s or "").strip().lower()
+    t = t.lstrip("\ufeff")
+    t = unicodedata.normalize("NFKD", t)
+    t = "".join(ch for ch in t if not unicodedata.combining(ch))
+    t = re.sub(r"[^a-z0-9]+", "_", t)
+    t = re.sub(r"_+", "_", t).strip("_")
+    return t
+
+
+def _norm_station_code(x: Any) -> str:
+    s = str(x or "").strip().upper()
+    s = s.lstrip("\ufeff")
+    s = re.sub(r"\s+", "", s)
+    s = re.sub(r"\.0$", "", s)
+
+    m = re.fullmatch(r"([A-Z])0*([0-9]{1,5})", s)
+    if m:
+        return f"{m.group(1)}{m.group(2).zfill(5)}"
+
+    m2 = re.fullmatch(r"0*([0-9]{1,5})", s)
+    if m2:
+        return m2.group(1).zfill(5)
+
+    return s
 
 
 def _parse_float_maybe(x: Any) -> Optional[float]:
@@ -102,7 +131,7 @@ def _load_gold_station_seed() -> pd.DataFrame:
         return pd.DataFrame(columns=["cod_stazione", "nome_stazione"])
 
     out = pd.DataFrame()
-    out["cod_stazione"] = df[col_code].astype(str).str.strip()
+    out["cod_stazione"] = df[col_code].map(_norm_station_code)
     out["nome_stazione"] = df[col_name].astype(str).str.strip() if col_name else ""
     out = out[out["cod_stazione"] != ""]
     out = out.drop_duplicates(subset=["cod_stazione"]).reset_index(drop=True)
@@ -133,11 +162,11 @@ def _load_od_station_seed() -> pd.DataFrame:
 
     rows = []
     if col_dep:
-        tmp = pd.DataFrame({"cod_stazione": df[col_dep].astype(str).str.strip()})
+        tmp = pd.DataFrame({"cod_stazione": df[col_dep].map(_norm_station_code)})
         tmp["nome_stazione"] = df[col_dep_name].astype(str).str.strip() if col_dep_name else ""
         rows.append(tmp)
     if col_arr:
-        tmp = pd.DataFrame({"cod_stazione": df[col_arr].astype(str).str.strip()})
+        tmp = pd.DataFrame({"cod_stazione": df[col_arr].map(_norm_station_code)})
         tmp["nome_stazione"] = df[col_arr_name].astype(str).str.strip() if col_arr_name else ""
         rows.append(tmp)
 
@@ -159,16 +188,29 @@ def _load_station_registry() -> pd.DataFrame:
 
     col_code = _pick_first_col(df, ["cod_stazione", "codice", "codice_stazione", "code", "station_code", "id"])
     col_name = _pick_first_col(df, ["nome_stazione", "nome", "nome_norm", "station_name"])
-    col_city = _pick_first_col(df, ["citta", "comune", "city", "nome_comune", "localita", "località"])
+    col_city = _pick_first_col(
+        df,
+        [
+            "citta",
+            "citta_nome",
+            "citta_stazione",
+            "comune",
+            "city",
+            "nome_comune",
+            "localita",
+            "località",
+            "città",
+        ],
+    )
 
-    col_lat = _pick_first_col(df, ["lat", "latitude", "y", "latitudine"])
-    col_lon = _pick_first_col(df, ["lon", "lng", "long", "longitude", "x", "longitudine"])
+    col_lat = _pick_first_col(df, ["lat", "latitude", "latitudine", "y", "y_wgs84", "lat_wgs84", "wgs84_lat"])
+    col_lon = _pick_first_col(df, ["lon", "lng", "long", "longitude", "longitudine", "x", "x_wgs84", "lon_wgs84", "wgs84_lon"])
 
     if col_code is None:
         raise ValueError("data/stations/stations.csv must contain a station code column")
 
     out = pd.DataFrame()
-    out["cod_stazione"] = df[col_code].astype(str).str.strip()
+    out["cod_stazione"] = df[col_code].map(_norm_station_code)
     out["nome_stazione"] = df[col_name].astype(str).str.strip() if col_name else ""
     out["citta"] = df[col_city].astype(str).str.strip() if col_city else ""
 
@@ -184,6 +226,7 @@ def _build_stations_dim() -> pd.DataFrame:
     seed_a = _load_gold_station_seed()
     seed_b = _load_od_station_seed()
     seed = pd.concat([seed_a, seed_b], ignore_index=True)
+    seed["cod_stazione"] = seed["cod_stazione"].map(_norm_station_code)
     seed = seed.drop_duplicates(subset=["cod_stazione"]).reset_index(drop=True)
 
     registry = _load_station_registry()
