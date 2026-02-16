@@ -1,6 +1,7 @@
 # scripts/run_pipeline.py
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from datetime import date, timedelta
@@ -29,6 +30,22 @@ def month_keys_between(d0: date, d1: date) -> list[str]:
     return sorted(out)
 
 
+def silver_path_for_month_key(month_key: str) -> str:
+    y = month_key[:4]
+    return os.path.join("data", "silver", y, f"{month_key}.parquet")
+
+
+def ensure_silver_available(months: list[str]) -> None:
+    missing = [m for m in months if not os.path.exists(silver_path_for_month_key(m))]
+    if missing:
+        miss = ", ".join(missing[:6]) + ("..." if len(missing) > 6 else "")
+        raise SystemExit(
+            "Pipeline stopped: no silver parquet found for months "
+            + miss
+            + ". Verifica ingest/transform e l'intervallo date richiesto."
+        )
+
+
 def run(start: date, end: date) -> None:
     s = start.isoformat()
     e = end.isoformat()
@@ -41,6 +58,7 @@ def run(start: date, end: date) -> None:
 
     # 3. Costruisci aggregazioni gold
     months = month_keys_between(start, end)
+    ensure_silver_available(months)
     call([sys.executable, "-m", "scripts.build_gold", "--months", *months])
 
     # 4. Costruisci dimensione stazioni
