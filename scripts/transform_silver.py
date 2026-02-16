@@ -1,6 +1,7 @@
 # scripts/transform_silver.py
 from __future__ import annotations
 
+import ast
 import gzip
 import os
 import re
@@ -52,6 +53,76 @@ def read_bronze(csv_gz: str, meta_path: str) -> pd.DataFrame:
     df["_bronze_path"] = csv_gz
     df["_reference_date"] = str(meta.get("reference_date", ""))
     return df
+
+
+def _epoch_to_it_string(v: Any) -> str:
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if s == "" or s == "0":
+        return ""
+    try:
+        ts = pd.to_datetime(int(float(s)), unit="s", utc=True).tz_convert("Europe/Rome")
+        return ts.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return ""
+
+
+def _parse_treni_payload(x: Any) -> List[Dict[str, Any]]:
+    if x is None:
+        return []
+    s = str(x).strip()
+    if not s or s.lower() == "nan":
+        return []
+    try:
+        parsed = ast.literal_eval(s)
+    except Exception:
+        return []
+    if isinstance(parsed, list):
+        return [r for r in parsed if isinstance(r, dict)]
+    return []
+
+
+def normalize_bronze_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize known bronze layouts into the historical tabular schema."""
+    if "Categoria" in df.columns and "Numero treno" in df.columns:
+        return df
+
+    if "treni" not in df.columns:
+        return df
+
+    rows: List[Dict[str, Any]] = []
+    for _, r in df.iterrows():
+        for t in _parse_treni_payload(r.get("treni")):
+            rows.append(
+                {
+                    "Categoria": t.get("c", ""),
+                    "Numero treno": t.get("n", ""),
+                    "Codice stazione partenza": "",
+                    "Nome stazione partenza": t.get("p", ""),
+                    "Ora partenza programmata": _epoch_to_it_string(t.get("op")),
+                    "Ritardo partenza": t.get("rp", ""),
+                    "Codice stazione arrivo": "",
+                    "Nome stazione arrivo": t.get("a", ""),
+                    "Ora arrivo programmata": _epoch_to_it_string(t.get("oa")),
+                    "Ritardo arrivo": t.get("ra", ""),
+                    "Cambi numerazione": "",
+                    "Provvedimenti": "",
+                    "Variazioni": "",
+                    "Stazione estera partenza": "",
+                    "Orario estero partenza": "",
+                    "Stazione estera arrivo": "",
+                    "Orario estero arrivo": "",
+                    "_extracted_at_utc": r.get("_extracted_at_utc", ""),
+                    "_bronze_path": r.get("_bronze_path", ""),
+                    "_reference_date": r.get("_reference_date", ""),
+                }
+            )
+
+    if not rows:
+        return df.iloc[0:0].copy()
+
+    return pd.DataFrame(rows)
 
 
 def canonical_rename(df: pd.DataFrame) -> pd.DataFrame:
@@ -131,6 +202,7 @@ def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
         if df[c].dtype == object:
             df[c] = df[c].astype(str)
 
+    df = normalize_bronze_schema(df)
     df = canonical_rename(df)
 
     required = [
@@ -143,7 +215,8 @@ def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     ]
     missing = [c for c in required if c not in df.columns]
     if missing:
-        raise RuntimeError(f"silver missing required columns after rename: {missing}")
+        path = str(df.get("_bronze_path", pd.Series([""])).iloc[0]) if len(df) else ""
+        raise RuntimeError(f"silver missing required columns after rename: {missing} (file={path})")
 
     df["provvedimenti"] = df.get("provvedimenti", "").astype(str).fillna("")
     df["variazioni"] = df.get("variazioni", "").astype(str).fillna("")
@@ -162,7 +235,7 @@ def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     df["missing_datetime"] = df["dt_partenza_prog"].isna() | df["dt_arrivo_prog"].isna()
     df["info_mancante"] = df["missing_datetime"]
 
-    stato_cfg = df.apply(se.classify, axis=1)
+    stato_cfg = df.apply(se.classify, axis=1).astype("object")
     stato_fb = _status_fallback_series(df)
 
     stato = stato_cfg.copy()
@@ -210,11 +283,27 @@ def main(start: str, end: Optional[str] = None) -> None:
         return
 
     by_month: Dict[str, List[pd.DataFrame]] = {}
+    skipped: List[str] = []
     for d, csv_gz, meta in files:
         df_b = read_bronze(csv_gz, meta)
-        df_s = transform(cfg, df_b)
+        try:
+            df_s = transform(cfg, df_b)
+        except RuntimeError as exc:
+            skipped.append(f"{csv_gz}: {exc}")
+            continue
+
+        if df_s.empty:
+            skipped.append(f"{csv_gz}: no rows after normalization")
+            continue
+
         key = f"{d.year:04d}{d.month:02d}"
         by_month.setdefault(key, []).append(df_s)
+
+    if not by_month:
+        print({"silver_updated_months": [], "skipped_files": len(skipped)})
+        for msg in skipped[:20]:
+            print(f"WARN {msg}")
+        return
 
     for key, parts in by_month.items():
         y = int(key[:4])
@@ -223,7 +312,9 @@ def main(start: str, end: Optional[str] = None) -> None:
         add_df = pd.concat(parts, ignore_index=True)
         upsert_month_parquet(p, add_df)
 
-    print({"silver_updated_months": sorted(list(by_month.keys()))})
+    print({"silver_updated_months": sorted(list(by_month.keys())), "skipped_files": len(skipped)})
+    for msg in skipped[:20]:
+        print(f"WARN {msg}")
 
 
 if __name__ == "__main__":
