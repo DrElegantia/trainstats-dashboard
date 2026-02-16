@@ -214,20 +214,6 @@ def build_gold(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, pd.DataFrame]
     ).reset_index()
     out["hist_giorno_categoria"] = h_d
 
-    h_m_od = df.groupby(["mese", "categoria", "cod_partenza", "cod_arrivo", "bucket_ritardo_arrivo"], dropna=False).agg(
-        count=("_obs_id", "count"),
-        minuti_ritardo=("minuti_ritardo", "sum"),
-        minuti_anticipo=("minuti_anticipo", "sum"),
-    ).reset_index()
-    out["hist_mese_categoria_od"] = h_m_od
-
-    h_d_od = df.groupby(["giorno", "ora", "categoria", "cod_partenza", "cod_arrivo", "bucket_ritardo_arrivo"], dropna=False).agg(
-        count=("_obs_id", "count"),
-        minuti_ritardo=("minuti_ritardo", "sum"),
-        minuti_anticipo=("minuti_anticipo", "sum"),
-    ).reset_index()
-    out["hist_giorno_categoria_od"] = h_d_od
-
     od_m = agg_core(["mese", "categoria", "cod_partenza", "cod_arrivo"], df)
     od_d = agg_core(["giorno", "ora", "categoria", "cod_partenza", "cod_arrivo"], df)
 
@@ -337,8 +323,6 @@ def gold_keys() -> Dict[str, List[str]]:
         "kpi_mese": ["mese"],
         "hist_mese_categoria": ["mese", "categoria", "bucket_ritardo_arrivo"],
         "hist_giorno_categoria": ["giorno", "ora", "categoria", "bucket_ritardo_arrivo"],
-        "hist_mese_categoria_od": ["mese", "categoria", "cod_partenza", "cod_arrivo", "bucket_ritardo_arrivo"],
-        "hist_giorno_categoria_od": ["giorno", "ora", "categoria", "cod_partenza", "cod_arrivo", "bucket_ritardo_arrivo"],
         "od_mese_categoria": ["mese", "categoria", "cod_partenza", "cod_arrivo"],
         "od_giorno_categoria": ["giorno", "ora", "categoria", "cod_partenza", "cod_arrivo"],
         "stazioni_mese_categoria_ruolo": ["mese", "categoria", "cod_stazione", "ruolo"],

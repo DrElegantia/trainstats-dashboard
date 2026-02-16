@@ -273,8 +273,6 @@ const state = {
     kpiDayCat: [],
     histMonthCat: [],
     histDayCat: [],
-    histMonthCatOD: [],
-    histDayCatOD: [],
     stationsMonthNode: [],
     stationsDayNode: [],
     odMonthCat: [],
@@ -1078,8 +1076,6 @@ function renderKPI() {
   let rows = base || [];
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
-  if (useOD && state.filters.dep !== "all") rows = rows.filter(passDep);
-  if (useOD && state.filters.arr !== "all") rows = rows.filter(passArr);
 
   if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
   else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
@@ -1120,19 +1116,12 @@ function renderKPI() {
 }
 
 function seriesDaily() {
-  const useOD = state.filters.dep !== "all" || state.filters.arr !== "all";
-
-  let rows = useOD
-    ? state.data.odDayCat || []
-    : state.data.kpiDayCat && state.data.kpiDayCat.length
-      ? state.data.kpiDayCat
-      : state.data.kpiDay || [];
+  let rows = state.data.kpiDayCat && state.data.kpiDayCat.length ? state.data.kpiDayCat : state.data.kpiDay;
+  rows = rows || [];
 
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, "giorno"));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
   if (hasDayFilter() || hasWeekdayFilter() || hasTimeFilter()) rows = rows.filter((r) => passDayKey(r, "giorno"));
-  if (useOD && state.filters.dep !== "all") rows = rows.filter(passDep);
-  if (useOD && state.filters.arr !== "all") rows = rows.filter(passArr);
 
   const by = new Map();
   for (const r of rows) {
@@ -1156,19 +1145,12 @@ function seriesDaily() {
 }
 
 function seriesMonthly() {
-  const useOD = state.filters.dep !== "all" || state.filters.arr !== "all";
-
-  let rows = useOD
-    ? state.data.odMonthCat || []
-    : state.data.kpiMonthCat && state.data.kpiMonthCat.length
-      ? state.data.kpiMonthCat
-      : state.data.kpiMonth || [];
+  let rows = state.data.kpiMonthCat && state.data.kpiMonthCat.length ? state.data.kpiMonthCat : state.data.kpiMonth;
+  rows = rows || [];
 
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, "mese"));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
   if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
-  if (useOD && state.filters.dep !== "all") rows = rows.filter(passDep);
-  if (useOD && state.filters.arr !== "all") rows = rows.filter(passArr);
 
   const by = new Map();
   for (const r of rows) {
@@ -1250,26 +1232,15 @@ function renderHist() {
   const toggle = document.getElementById("histModeToggle");
   const showPct = !!(toggle && toggle.checked);
 
-  const useOD = state.filters.dep !== "all" || state.filters.arr !== "all";
-  const haveDayHist = useOD
-    ? state.data.histDayCatOD && state.data.histDayCatOD.length > 0
-    : state.data.histDayCat && state.data.histDayCat.length > 0;
+  const haveDayHist = state.data.histDayCat && state.data.histDayCat.length > 0;
   const useDay = haveDayHist && (hasDayFilter() || hasWeekdayFilter() || hasTimeFilter());
-  const base = useOD
-    ? useDay
-      ? state.data.histDayCatOD
-      : state.data.histMonthCatOD
-    : useDay
-      ? state.data.histDayCat
-      : state.data.histMonthCat;
+  const base = useDay ? state.data.histDayCat : state.data.histMonthCat;
   const keyField = useDay ? "giorno" : "mese";
 
   let rows = base || [];
 
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
-  if (useOD && state.filters.dep !== "all") rows = rows.filter(passDep);
-  if (useOD && state.filters.arr !== "all") rows = rows.filter(passArr);
 
   if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
   else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
@@ -1350,8 +1321,6 @@ function renderStationsTable() {
 
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
-  if (useOD && state.filters.dep !== "all") rows = rows.filter(passDep);
-  if (useOD && state.filters.arr !== "all") rows = rows.filter(passArr);
 
   if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
   else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
@@ -1406,8 +1375,6 @@ function renderODTable() {
 
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
-  if (useOD && state.filters.dep !== "all") rows = rows.filter(passDep);
-  if (useOD && state.filters.arr !== "all") rows = rows.filter(passArr);
 
   if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
   else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
@@ -1449,8 +1416,6 @@ function renderCitiesTable() {
 
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
-  if (useOD && state.filters.dep !== "all") rows = rows.filter(passDep);
-  if (useOD && state.filters.arr !== "all") rows = rows.filter(passArr);
 
   if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
   else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
@@ -1521,8 +1486,6 @@ function renderMap() {
 
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
-  if (useOD && state.filters.dep !== "all") rows = rows.filter(passDep);
-  if (useOD && state.filters.arr !== "all") rows = rows.filter(passArr);
 
   if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
   else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
@@ -1695,8 +1658,6 @@ async function loadAll() {
     "kpi_giorno_categoria.csv",
     "hist_mese_categoria.csv",
     "hist_giorno_categoria.csv",
-    "hist_mese_categoria_od.csv",
-    "hist_giorno_categoria_od.csv",
     "stazioni_mese_categoria_nodo.csv",
     "stazioni_giorno_categoria_nodo.csv",
     "od_mese_categoria.csv",
@@ -1717,8 +1678,6 @@ async function loadAll() {
   state.data.kpiDayCat = parsed["kpi_giorno_categoria.csv"] || [];
   state.data.histMonthCat = parsed["hist_mese_categoria.csv"] || [];
   state.data.histDayCat = parsed["hist_giorno_categoria.csv"] || [];
-  state.data.histMonthCatOD = parsed["hist_mese_categoria_od.csv"] || [];
-  state.data.histDayCatOD = parsed["hist_giorno_categoria_od.csv"] || [];
   state.data.stationsMonthNode = parsed["stazioni_mese_categoria_nodo.csv"] || [];
   state.data.stationsDayNode = parsed["stazioni_giorno_categoria_nodo.csv"] || [];
   state.data.odMonthCat = parsed["od_mese_categoria.csv"] || [];
