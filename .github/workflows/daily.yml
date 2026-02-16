@@ -56,11 +56,36 @@ jobs:
         run: |
           set -euo pipefail
 
+          normalize_date() {
+            local raw="$1"
+            python - "$raw" <<'PY'
+            import re
+            import sys
+            from datetime import date
+
+            raw = sys.argv[1].strip()
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
+                raise SystemExit(f"ERROR: invalid date '{raw}'. Use YYYY-MM-DD")
+
+            y, m, d = raw.split("-")
+            mm = int(m)
+            dd = int(d)
+
+            if mm > 12 and 1 <= dd <= 12:
+                raw = f"{int(y):04d}-{dd:02d}-{mm:02d}"
+
+            _ = date.fromisoformat(raw)
+            print(raw)
+            PY
+          }
+
           if [ -n "${START_DATE:-}" ] && [ -z "${END_DATE:-}" ]; then
             END_DATE="$START_DATE"
           fi
 
           if [ -n "${START_DATE:-}" ]; then
+            START_DATE="$(normalize_date "$START_DATE")"
+            END_DATE="$(normalize_date "$END_DATE")"
             echo "Running backfill from $START_DATE to $END_DATE"
             python -m scripts.run_pipeline --start "$START_DATE" --end "$END_DATE"
           else

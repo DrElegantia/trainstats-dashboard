@@ -7,7 +7,7 @@ import sys
 from datetime import date, timedelta
 from typing import Optional, Set
 
-from .utils import load_yaml, today_in_tz
+from .utils import load_yaml, parse_cli_date, today_in_tz
 
 
 def call(cmd: list[str]) -> None:
@@ -95,8 +95,8 @@ def main(start: Optional[str], end: Optional[str]) -> None:
     tz_name = cfg["project"]["timezone"]
 
     if start:
-        d0 = date.fromisoformat(start)
-        d1 = date.fromisoformat(end) if end else d0
+        d0 = parse_cli_date(start, 'start date')
+        d1 = parse_cli_date(end, 'end date') if end else d0
     else:
         today = today_in_tz(tz_name)
         d0 = today - timedelta(days=1)

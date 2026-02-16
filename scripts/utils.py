@@ -44,6 +44,31 @@ def parse_di_df(s: str) -> date:
     return datetime.strptime(s, "%d_%m_%Y").date()
 
 
+def parse_cli_date(value: str, field_name: str) -> date:
+    """Parse date input with guardrails for common YYYY-DD-MM typos."""
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        parts = value.split("-")
+        if len(parts) == 3 and all(part.isdigit() for part in parts):
+            y, m, d = parts
+            mm = int(m)
+            dd = int(d)
+            if mm > 12 and 1 <= dd <= 12:
+                fixed = f"{int(y):04d}-{dd:02d}-{mm:02d}"
+                try:
+                    return date.fromisoformat(fixed)
+                except ValueError:
+                    pass
+                raise SystemExit(
+                    f"Invalid {field_name} '{value}'. Did you mean '{fixed}'?"
+                ) from exc
+
+        raise SystemExit(
+            f"Invalid {field_name} '{value}'. Expected format YYYY-MM-DD."
+        ) from exc
+
+
 def format_di_df(d: date) -> str:
     return d.strftime("%d_%m_%Y")
 
