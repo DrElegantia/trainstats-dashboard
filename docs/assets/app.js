@@ -1290,7 +1290,16 @@ function renderHist() {
 
 function isCapoluogoCity(cityName) {
   if (!state.capoluoghiSet || state.capoluoghiSet.size === 0) return true;
-  return state.capoluoghiSet.has(normalizeText(cityName));
+
+  const name = normalizeText(cityName);
+  if (!name) return false;
+  if (state.capoluoghiSet.has(name)) return true;
+
+  for (const cap of state.capoluoghiSet) {
+    if (name.startsWith(cap + " ") || name.startsWith(cap + "-") || name.startsWith(cap + "'")) return true;
+  }
+
+  return false;
 }
 
 function renderStationsTable() {
@@ -1475,6 +1484,10 @@ function renderMap() {
   for (const r of rows) {
     const code = String(r.cod_stazione || "").trim();
     if (!code) continue;
+
+    const city = stationCity(code, r.nome_stazione || code);
+    if (!city) continue;
+    if (!isCapoluogoCity(city)) continue;
 
     const coords = stationCoords(code);
     if (!coords) continue;
