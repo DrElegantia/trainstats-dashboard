@@ -33,13 +33,20 @@ def run(start: date, end: date) -> None:
     s = start.isoformat()
     e = end.isoformat()
 
+    # 1. Scarica dati raw
     call([sys.executable, "-m", "scripts.ingest", "--start", s, "--end", e])
+    
+    # 2. Trasforma in silver
     call([sys.executable, "-m", "scripts.transform_silver", "--start", s, "--end", e])
 
+    # 3. Costruisci aggregazioni gold
     months = month_keys_between(start, end)
     call([sys.executable, "-m", "scripts.build_gold", "--months", *months])
 
+    # 4. Costruisci dimensione stazioni
     call([sys.executable, "-m", "scripts.build_station_dim"])
+    
+    # 5. Copia tutto in docs/data per GitHub Pages
     call([sys.executable, "-m", "scripts.build_site"])
 
 
