@@ -68,15 +68,6 @@ jobs:
             python -m scripts.run_pipeline
           fi
 
-      - name: Build stations dimension into gold
-        run: |
-          set -euo pipefail
-          python -m scripts.build_station_dim
-          echo "stations_dim preview"
-          ls -la data/gold || true
-          test -f data/gold/stations_dim.csv && head -n 5 data/gold/stations_dim.csv || true
-          test -f data/gold/stations_dim.csv && wc -l data/gold/stations_dim.csv || true
-
       - name: Update stations unknown list
         run: |
           python -m scripts.update_stations || true
@@ -105,9 +96,6 @@ jobs:
 
           echo "Docs data tree:"
           ls -la docs/data
-          echo "stations_dim in docs"
-          test -f docs/data/stations_dim.csv && head -n 5 docs/data/stations_dim.csv || true
-          test -f docs/data/stations_dim.csv && wc -l docs/data/stations_dim.csv || true
 
       - name: Commit generated data and docs
         run: |
