@@ -659,7 +659,7 @@ function initDayWeekTimeControls() {
   dayWrap.style.flexWrap = "wrap";
 
   const dayLab = document.createElement("div");
-  dayLab.innerText = "Giorno";
+  dayLab.innerText = "";
 
   const from = document.createElement("input");
   from.type = "date";
