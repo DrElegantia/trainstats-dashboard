@@ -110,6 +110,7 @@ def build_metrics(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     df["giorno"] = to_day_key(df["dt_partenza_prog"])
     df["mese"] = to_month_key(df["dt_partenza_prog"])
     df["anno"] = df["dt_partenza_prog"].dt.year.astype("Int64")
+    df["ora"] = df["dt_partenza_prog"].dt.strftime("%H:00")
 
     df["ritardo_partenza_min"] = pd.to_numeric(df["ritardo_partenza_min"], errors="coerce")
     df["ritardo_arrivo_min"] = pd.to_numeric(df["ritardo_arrivo_min"], errors="coerce")
@@ -194,9 +195,9 @@ def agg_core(group_cols: List[str], df: pd.DataFrame) -> pd.DataFrame:
 def build_gold(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
     out: Dict[str, pd.DataFrame] = {}
 
-    out["kpi_giorno_categoria"] = agg_core(["giorno", "categoria"], df)
+    out["kpi_giorno_categoria"] = agg_core(["giorno", "ora", "categoria"], df)
     out["kpi_mese_categoria"] = agg_core(["mese", "categoria"], df)
-    out["kpi_giorno"] = agg_core(["giorno"], df)
+    out["kpi_giorno"] = agg_core(["giorno", "ora"], df)
     out["kpi_mese"] = agg_core(["mese"], df)
 
     h_m = df.groupby(["mese", "categoria", "bucket_ritardo_arrivo"], dropna=False).agg(
@@ -206,7 +207,7 @@ def build_gold(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, pd.DataFrame]
     ).reset_index()
     out["hist_mese_categoria"] = h_m
 
-    h_d = df.groupby(["giorno", "categoria", "bucket_ritardo_arrivo"], dropna=False).agg(
+    h_d = df.groupby(["giorno", "ora", "categoria", "bucket_ritardo_arrivo"], dropna=False).agg(
         count=("_obs_id", "count"),
         minuti_ritardo=("minuti_ritardo", "sum"),
         minuti_anticipo=("minuti_anticipo", "sum"),
@@ -214,7 +215,7 @@ def build_gold(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, pd.DataFrame]
     out["hist_giorno_categoria"] = h_d
 
     od_m = agg_core(["mese", "categoria", "cod_partenza", "cod_arrivo"], df)
-    od_d = agg_core(["giorno", "categoria", "cod_partenza", "cod_arrivo"], df)
+    od_d = agg_core(["giorno", "ora", "categoria", "cod_partenza", "cod_arrivo"], df)
 
     part_names = df.dropna(subset=["cod_partenza"]).drop_duplicates("cod_partenza").set_index("cod_partenza")["nome_partenza"]
     arr_names = df.dropna(subset=["cod_arrivo"]).drop_duplicates("cod_arrivo").set_index("cod_arrivo")["nome_arrivo"]
@@ -239,11 +240,11 @@ def build_gold(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, pd.DataFrame]
 
     out["stazioni_mese_categoria_ruolo"] = pd.concat([dep_m, arr_m], ignore_index=True)
 
-    dep_d = agg_core(["giorno", "categoria", "cod_stazione"], dep_src)
+    dep_d = agg_core(["giorno", "ora", "categoria", "cod_stazione"], dep_src)
     dep_d["ruolo"] = "partenza"
     dep_d["nome_stazione"] = dep_d["cod_stazione"].map(part_names).fillna("")
 
-    arr_d = agg_core(["giorno", "categoria", "cod_stazione"], arr_src)
+    arr_d = agg_core(["giorno", "ora", "categoria", "cod_stazione"], arr_src)
     arr_d["ruolo"] = "arrivo"
     arr_d["nome_stazione"] = arr_d["cod_stazione"].map(arr_names).fillna("")
 
@@ -281,7 +282,7 @@ def build_gold(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, pd.DataFrame]
     out["stazioni_mese_categoria_nodo"] = comb2_m
 
     combined_d = out["stazioni_giorno_categoria_ruolo"]
-    comb2_d = combined_d.groupby(["giorno", "categoria", "cod_stazione"], dropna=False).agg(
+    comb2_d = combined_d.groupby(["giorno", "ora", "categoria", "cod_stazione"], dropna=False).agg(
         corse_osservate=("corse_osservate", "sum"),
         effettuate=("effettuate", "sum"),
         cancellate=("cancellate", "sum"),
@@ -316,18 +317,18 @@ def build_gold(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, pd.DataFrame]
 
 def gold_keys() -> Dict[str, List[str]]:
     return {
-        "kpi_giorno_categoria": ["giorno", "categoria"],
+        "kpi_giorno_categoria": ["giorno", "ora", "categoria"],
         "kpi_mese_categoria": ["mese", "categoria"],
-        "kpi_giorno": ["giorno"],
+        "kpi_giorno": ["giorno", "ora"],
         "kpi_mese": ["mese"],
         "hist_mese_categoria": ["mese", "categoria", "bucket_ritardo_arrivo"],
-        "hist_giorno_categoria": ["giorno", "categoria", "bucket_ritardo_arrivo"],
+        "hist_giorno_categoria": ["giorno", "ora", "categoria", "bucket_ritardo_arrivo"],
         "od_mese_categoria": ["mese", "categoria", "cod_partenza", "cod_arrivo"],
-        "od_giorno_categoria": ["giorno", "categoria", "cod_partenza", "cod_arrivo"],
+        "od_giorno_categoria": ["giorno", "ora", "categoria", "cod_partenza", "cod_arrivo"],
         "stazioni_mese_categoria_ruolo": ["mese", "categoria", "cod_stazione", "ruolo"],
         "stazioni_mese_categoria_nodo": ["mese", "categoria", "cod_stazione"],  # ✅ CORRETTO - senza ruolo
-        "stazioni_giorno_categoria_ruolo": ["giorno", "categoria", "cod_stazione", "ruolo"],
-        "stazioni_giorno_categoria_nodo": ["giorno", "categoria", "cod_stazione"],  # ✅ CORRETTO - senza ruolo
+        "stazioni_giorno_categoria_ruolo": ["giorno", "ora", "categoria", "cod_stazione", "ruolo"],
+        "stazioni_giorno_categoria_nodo": ["giorno", "ora", "categoria", "cod_stazione"],  # ✅ CORRETTO - senza ruolo
     }
 
 
