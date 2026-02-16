@@ -58,7 +58,7 @@ jobs:
 
           normalize_date() {
             local raw="$1"
-            python -c 'import re,sys; from datetime import date; raw=sys.argv[1].strip(); re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw) or sys.exit(f"ERROR: invalid date {raw!r}. Use YYYY-MM-DD"); y,m,d=raw.split("-"); mm=int(m); dd=int(d); raw = f"{int(y):04d}-{dd:02d}-{mm:02d}" if (mm > 12 and 1 <= dd <= 12) else raw; date.fromisoformat(raw); print(raw)' "$raw"
+            python -c "from scripts.utils import parse_cli_date; import sys; print(parse_cli_date(sys.argv[1], 'workflow date').isoformat())" "$raw"
           }
 
           if [ -n "${START_DATE:-}" ] && [ -z "${END_DATE:-}" ]; then
