@@ -1458,6 +1458,8 @@ function renderMap() {
 
   clearMarkers();
 
+  const noteEl = firstEl(["mapNote", "noteMap"]);
+
   const useDay = useDailyAggregation() && state.data.stationsDayNode && state.data.stationsDayNode.length > 0;
   const base = useDay ? state.data.stationsDayNode : state.data.stationsMonthNode;
   const keyField = useDay ? "giorno" : "mese";
@@ -1475,6 +1477,9 @@ function renderMap() {
   for (const r of rows) {
     const code = String(r.cod_stazione || "").trim();
     if (!code) continue;
+
+    const city = stationCity(code, r.nome_stazione || code);
+    if (!city || !isCapoluogoCity(city)) continue;
 
     const coords = stationCoords(code);
     if (!coords) continue;
@@ -1508,6 +1513,14 @@ function renderMap() {
 
   pts.sort((a, b) => toNum(b.v) - toNum(a.v));
   const top = pts.slice(0, 250);
+
+  if (noteEl) {
+    if (state.capoluoghiSet && state.capoluoghiSet.size > 0) {
+      noteEl.innerText = "Mappa filtrata: sono mostrati solo i capoluoghi di provincia.";
+    } else {
+      noteEl.innerText = "Elenco capoluoghi non trovato: mappa senza filtro per capoluoghi.";
+    }
+  }
 
   const bounds = [];
   for (const p of top) {

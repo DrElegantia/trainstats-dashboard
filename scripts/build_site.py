@@ -45,10 +45,15 @@ def copy_root_files(target_dir: Path) -> None:
             break
     
     # Capoluoghi provincia (se esiste)
-    capoluoghi = Path("data") / "capoluoghi_provincia.csv"
-    if capoluoghi.exists():
-        shutil.copy2(capoluoghi, target_dir / "capoluoghi_provincia.csv")
-        print(f"Copied capoluoghi_provincia.csv")
+    capoluoghi_paths = [
+        Path("data") / "capoluoghi_provincia.csv",
+        Path("data") / "stations" / "capoluoghi_provincia.csv",
+    ]
+    for capoluoghi in capoluoghi_paths:
+        if capoluoghi.exists():
+            shutil.copy2(capoluoghi, target_dir / "capoluoghi_provincia.csv")
+            print(f"Copied capoluoghi_provincia.csv from {capoluoghi}")
+            break
 
 
 def write_manifest(target_dir: Path, manifest: dict) -> None:
