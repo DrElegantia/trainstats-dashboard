@@ -1042,6 +1042,8 @@ function getMetricMode() {
   if (v === "in_ritardo" || v === "conteggio_ritardo") return "count_late";
   if (v === "corse_osservate") return "count_total";
   if (v === "minuti_ritardo_tot") return "minutes";
+  if (v === "soppresse" || v === "soppressi") return "suppressed";
+  if (v === "cancellate" || v === "cancellati" || v === "cancellate_tot") return "cancelled";
   return "pct";
 }
 
@@ -1050,16 +1052,21 @@ function metricLabel() {
   if (mode === "count_late") return "In ritardo";
   if (mode === "count_total") return "Corse";
   if (mode === "minutes") return "Minuti";
+  if (mode === "suppressed") return "Soppressi";
+  if (mode === "cancelled") return "Cancellati";
   return "% in ritardo";
 }
 
-function computeValue(corse, ritardo, minuti) {
+function computeValue(corse, ritardo, minuti, sopp, canc) {
   const mode = getMetricMode();
   if (mode === "count_late") return ritardo;
   if (mode === "count_total") return corse;
   if (mode === "minutes") return minuti;
+  if (mode === "suppressed") return sopp || 0;
+  if (mode === "cancelled") return canc || 0;
   return corse > 0 ? (ritardo / corse) * 100 : 0;
 }
+
 
 function renderKPI() {
   const useDay = useDailyAggregation();
@@ -1120,16 +1127,19 @@ function seriesDaily() {
   for (const r of rows) {
     const day = String(r.giorno || "").slice(0, 10);
     if (!day) continue;
-    if (!by.has(day)) by.set(day, { key: day, corse: 0, rit: 0, min: 0 });
+    if (!by.has(day)) by.set(day, { key: day, corse: 0, rit: 0, min: 0, sopp: 0, canc: 0 });
     const o = by.get(day);
     o.corse += toNum(r.corse_osservate);
     o.rit += toNum(r.in_ritardo);
     o.min += toNum(r.minuti_ritardo_tot);
+    o.sopp += toNum(r.soppresse);
+    const cv = r.cancellate_tot !== undefined && r.cancellate_tot !== "" ? r.cancellate_tot : r.cancellate;
+    o.canc += toNum(cv);
   }
 
   const out = Array.from(by.values()).sort((a, b) => String(a.key).localeCompare(String(b.key)));
   const x = out.map((o) => o.key);
-  const y = out.map((o) => computeValue(o.corse, o.rit, o.min));
+  const y = out.map((o) => computeValue(o.corse, o.rit, o.min, o.sopp, o.canc));
 
   return { x, y };
 }
@@ -1146,16 +1156,19 @@ function seriesMonthly() {
   for (const r of rows) {
     const m = String(r.mese || "").slice(0, 7);
     if (!m) continue;
-    if (!by.has(m)) by.set(m, { key: m, corse: 0, rit: 0, min: 0 });
+    if (!by.has(m)) by.set(m, { key: m, corse: 0, rit: 0, min: 0, sopp: 0, canc: 0 });
     const o = by.get(m);
     o.corse += toNum(r.corse_osservate);
     o.rit += toNum(r.in_ritardo);
     o.min += toNum(r.minuti_ritardo_tot);
+    o.sopp += toNum(r.soppresse);
+    const cv = r.cancellate_tot !== undefined && r.cancellate_tot !== "" ? r.cancellate_tot : r.cancellate;
+    o.canc += toNum(cv);
   }
 
   const out = Array.from(by.values()).sort((a, b) => String(a.key).localeCompare(String(b.key)));
   const x = out.map((o) => o.key);
-  const y = out.map((o) => computeValue(o.corse, o.rit, o.min));
+  const y = out.map((o) => computeValue(o.corse, o.rit, o.min, o.sopp, o.canc));
 
   return { x, y };
 }
@@ -1272,7 +1285,7 @@ function renderHist() {
       font: { color: "#e8eefc" }
     },
     { displayModeBar: false, responsive: true }
-    );
+  );
 }
 
 function isCapoluogoCity(cityName) {
@@ -1435,7 +1448,9 @@ function mapMetricValue(row) {
   const corse = toNum(row.corse_osservate);
   const rit = toNum(row.in_ritardo);
   const min = toNum(row.minuti_ritardo_tot);
-  return computeValue(corse, rit, min);
+  const sopp = toNum(row.soppresse);
+  const canc = toNum(row.cancellate_tot);
+  return computeValue(corse, rit, min, sopp, canc);
 }
 
 function renderMap() {
@@ -1471,7 +1486,9 @@ function renderMap() {
         nome: stationName(code, r.nome_stazione || ""),
         corse_osservate: 0,
         in_ritardo: 0,
-        minuti_ritardo_tot: 0
+        minuti_ritardo_tot: 0,
+        soppresse: 0,
+        cancellate_tot: 0
       });
     }
 
@@ -1479,6 +1496,9 @@ function renderMap() {
     a.corse_osservate += toNum(r.corse_osservate);
     a.in_ritardo += toNum(r.in_ritardo);
     a.minuti_ritardo_tot += toNum(r.minuti_ritardo_tot);
+    a.soppresse += toNum(r.soppresse);
+    const canc = r.cancellate_tot !== undefined && r.cancellate_tot !== "" ? r.cancellate_tot : r.cancellate;
+    a.cancellate_tot += toNum(canc);
   }
 
   const pts = Array.from(agg.values()).map((o) => {
