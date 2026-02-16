@@ -313,8 +313,18 @@ def gold_keys() -> Dict[str, List[str]]:
 
 
 def save_gold_tables(tables: Dict[str, pd.DataFrame]) -> None:
+    # Primary build output
     out_dir = os.path.join("data", "gold")
     ensure_dir(out_dir)
+
+    # GitHub Pages output when Pages root is /docs
+    site_dirs = [
+        os.path.join("docs", "data", "gold"),
+    ]
+    if os.path.isdir(os.path.join("trainstats-dashboard", "docs")):
+        site_dirs.append(os.path.join("trainstats-dashboard", "docs", "data", "gold"))
+    for d in site_dirs:
+        ensure_dir(d)
 
     keys = gold_keys()
 
@@ -335,6 +345,10 @@ def save_gold_tables(tables: Dict[str, pd.DataFrame]) -> None:
             merged = merged.drop_duplicates(subset=k, keep="last").sort_values(k)
 
         merged.to_csv(path, index=False)
+
+        for d in site_dirs:
+            merged.to_csv(os.path.join(d, f"{name}.csv"), index=False)
+
 
 
 def main() -> None:
