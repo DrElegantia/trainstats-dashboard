@@ -3,7 +3,6 @@ name: TrainStats Daily Pipeline
 on:
   schedule:
     - cron: "30 2 * * *"
-
   workflow_dispatch:
     inputs:
       start_date:
@@ -25,10 +24,12 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -65,6 +66,37 @@ jobs:
           else
             echo "Running daily pipeline"
             python -m scripts.run_pipeline
+          fi
+
+      - name: Ensure gold and site artifacts are built
+        run: |
+          set -euo pipefail
+
+          python -m scripts.build_gold
+          python -m scripts.build_station_dim
+
+          if python -m scripts.build_site; then
+            echo "build_site ok"
+          else
+            echo "build_site missing or failed, creating minimal manifest in site/data"
+            mkdir -p site/data
+            python - <<'PY'
+            import os, json, glob, datetime
+            os.makedirs("site/data", exist_ok=True)
+            gold = sorted([os.path.basename(p) for p in glob.glob("data/gold/*.csv")])
+            man = {
+              "built_at_utc": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+              "gold_files": gold,
+            }
+            with open("site/data/manifest.json", "w", encoding="utf-8") as f:
+              json.dump(man, f, ensure_ascii=False, indent=2)
+            print({"manifest_written": "site/data/manifest.json", "gold_files": len(gold)})
+            PY
+          fi
+
+          if [ ! -d data/gold ] || [ -z "$(ls -1 data/gold/*.csv 2>/dev/null | head -n 1)" ]; then
+            echo "No gold CSV produced, failing"
+            exit 1
           fi
 
       - name: Sanity check bronze rows
@@ -123,25 +155,43 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p docs/data
+          mkdir -p docs
           touch docs/.nojekyll
 
-          rm -f docs/data/*.csv || true
+          rm -rf docs/data
+          mkdir -p docs/data
 
-          cp -v data/gold/*.csv docs/data/
+          if [ -d site/data ]; then
+            cp -v site/data/* docs/data/ || true
+          fi
+
+          cp -v data/gold/*.csv docs/data/ || true
 
           if [ -f site/data/stations_dim.csv ]; then
             cp -v site/data/stations_dim.csv docs/data/stations_dim.csv
-          elif [ -f docs/data/stations_dim.csv ]; then
-            echo "stations_dim.csv already present"
-          else
-            echo "stations_dim.csv missing (build_station_dim must have run)"
+          fi
+
+          if [ -f site/data/capoluoghi_provincia.csv ]; then
+            cp -v site/data/capoluoghi_provincia.csv docs/data/capoluoghi_provincia.csv
           fi
 
           if [ -f site/data/manifest.json ]; then
             cp -v site/data/manifest.json docs/data/manifest.json
           elif [ -f data/gold/manifest.json ]; then
             cp -v data/gold/manifest.json docs/data/manifest.json
+          else
+            python - <<'PY'
+            import os, json, glob, datetime
+            os.makedirs("docs/data", exist_ok=True)
+            gold = sorted([os.path.basename(p) for p in glob.glob("docs/data/*.csv")])
+            man = {
+              "built_at_utc": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+              "gold_files": gold,
+            }
+            with open("docs/data/manifest.json", "w", encoding="utf-8") as f:
+              json.dump(man, f, ensure_ascii=False, indent=2)
+            print({"manifest_written": "docs/data/manifest.json", "gold_files": len(gold)})
+            PY
           fi
 
           echo "Docs data tree:"
