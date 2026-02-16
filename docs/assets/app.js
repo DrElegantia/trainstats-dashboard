@@ -1040,8 +1040,7 @@ function ensureHistToggle() {
 function useDailyAggregation() {
   const haveDay = state.data.kpiDayCat && state.data.kpiDayCat.length > 0;
   if (!haveDay) return false;
-  if (hasDayFilter() || hasWeekdayFilter() || hasTimeFilter()) return true;
-  return false;
+  return true;
 }
 
 function getMetricMode() {
