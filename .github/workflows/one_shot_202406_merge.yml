@@ -30,6 +30,7 @@ jobs:
         id: bronze_range
         run: |
           python - <<'PY'
+          import os
           import re
           from pathlib import Path
 
@@ -56,7 +57,11 @@ jobs:
           print(f"end={end}")
           print(f"months={','.join(months)}")
 
-          with open("$GITHUB_OUTPUT", "a", encoding="utf-8") as f:
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if not github_output:
+            raise SystemExit("GITHUB_OUTPUT is not set")
+
+          with open(github_output, "a", encoding="utf-8") as f:
             f.write(f"start={start}\n")
             f.write(f"end={end}\n")
             f.write(f"months={' '.join(months)}\n")
