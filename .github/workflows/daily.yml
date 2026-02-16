@@ -80,7 +80,7 @@ jobs:
           else
             echo "build_site missing or failed, creating minimal manifest in site/data"
             mkdir -p site/data
-            python - <<'PY'
+python - <<'PY'
 import os, json, glob, datetime
 os.makedirs("site/data", exist_ok=True)
 gold = sorted([os.path.basename(p) for p in glob.glob("data/gold/*.csv")])
@@ -105,7 +105,8 @@ PY
           END_DATE: ${{ inputs.end_date }}
         run: |
           set -euo pipefail
-          python - <<'PY'
+
+python - <<'PY'
 import gzip, os
 from datetime import date, timedelta
 
@@ -180,7 +181,7 @@ PY
           elif [ -f data/gold/manifest.json ]; then
             cp -v data/gold/manifest.json docs/data/manifest.json
           else
-            python - <<'PY'
+python - <<'PY'
 import os, json, glob, datetime
 os.makedirs("docs/data", exist_ok=True)
 gold = sorted([os.path.basename(p) for p in glob.glob("docs/data/*.csv")])
