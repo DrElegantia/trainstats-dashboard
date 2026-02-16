@@ -241,7 +241,9 @@ function safeManifestDefaults() {
       "stazioni_mese_categoria_nodo.csv",
       "stazioni_giorno_categoria_nodo.csv",
       "od_mese_categoria.csv",
-      "od_giorno_categoria.csv"
+      "od_giorno_categoria.csv",
+      "hist_stazioni_mese_categoria_ruolo.csv",
+      "hist_stazioni_giorno_categoria_ruolo.csv"
     ],
     delay_bucket_labels: [
       "<=-60",
@@ -276,7 +278,9 @@ const state = {
     stationsMonthNode: [],
     stationsDayNode: [],
     odMonthCat: [],
-    odDayCat: []
+    odDayCat: [],
+    histStationsMonthRuolo: [],
+    histStationsDayRuolo: []
   },
   stationsRef: new Map(),
   capoluoghiSet: new Set(),
@@ -401,6 +405,10 @@ function ensureWeekdays() {
 function hasWeekdayFilter() {
   ensureWeekdays();
   return state.filters.weekdays.some((x) => !x);
+}
+
+function hasStationFilter() {
+  return state.filters.dep !== "all" || state.filters.arr !== "all";
 }
 
 function hasDayFilter() {
@@ -1069,16 +1077,35 @@ function computeValue(corse, ritardo, minuti, sopp, canc) {
 
 
 function renderKPI() {
+  const stationFiltered = hasStationFilter();
   const useDay = useDailyAggregation();
-  const base = useDay ? state.data.kpiDayCat : state.data.kpiMonthCat;
-  const keyField = useDay ? "giorno" : "mese";
+  let base, keyField;
+
+  if (stationFiltered) {
+    const haveOdDay = state.data.odDayCat && state.data.odDayCat.length > 0;
+    if (useDay && haveOdDay) {
+      base = state.data.odDayCat;
+      keyField = "giorno";
+    } else {
+      base = state.data.odMonthCat;
+      keyField = "mese";
+    }
+  } else {
+    base = useDay ? state.data.kpiDayCat : state.data.kpiMonthCat;
+    keyField = useDay ? "giorno" : "mese";
+  }
 
   let rows = base || [];
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
 
-  if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
-  else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
+  if (stationFiltered) {
+    if (state.filters.dep !== "all") rows = rows.filter(passDep);
+    if (state.filters.arr !== "all") rows = rows.filter(passArr);
+  }
+
+  if (useDay || (stationFiltered && keyField === "giorno")) rows = rows.filter((r) => passDayKey(r, "giorno"));
+  else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, keyField));
 
   const total = rows.reduce((a, r) => a + toNum(r.corse_osservate), 0);
   const late = rows.reduce((a, r) => a + toNum(r.in_ritardo), 0);
@@ -1116,11 +1143,24 @@ function renderKPI() {
 }
 
 function seriesDaily() {
-  let rows = state.data.kpiDayCat && state.data.kpiDayCat.length ? state.data.kpiDayCat : state.data.kpiDay;
+  const stationFiltered = hasStationFilter();
+  let rows;
+
+  if (stationFiltered) {
+    rows = state.data.odDayCat && state.data.odDayCat.length ? state.data.odDayCat : [];
+  } else {
+    rows = state.data.kpiDayCat && state.data.kpiDayCat.length ? state.data.kpiDayCat : state.data.kpiDay;
+  }
   rows = rows || [];
 
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, "giorno"));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
+
+  if (stationFiltered) {
+    if (state.filters.dep !== "all") rows = rows.filter(passDep);
+    if (state.filters.arr !== "all") rows = rows.filter(passArr);
+  }
+
   if (hasDayFilter() || hasWeekdayFilter() || hasTimeFilter()) rows = rows.filter((r) => passDayKey(r, "giorno"));
 
   const by = new Map();
@@ -1145,11 +1185,24 @@ function seriesDaily() {
 }
 
 function seriesMonthly() {
-  let rows = state.data.kpiMonthCat && state.data.kpiMonthCat.length ? state.data.kpiMonthCat : state.data.kpiMonth;
+  const stationFiltered = hasStationFilter();
+  let rows;
+
+  if (stationFiltered) {
+    rows = state.data.odMonthCat && state.data.odMonthCat.length ? state.data.odMonthCat : [];
+  } else {
+    rows = state.data.kpiMonthCat && state.data.kpiMonthCat.length ? state.data.kpiMonthCat : state.data.kpiMonth;
+  }
   rows = rows || [];
 
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, "mese"));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
+
+  if (stationFiltered) {
+    if (state.filters.dep !== "all") rows = rows.filter(passDep);
+    if (state.filters.arr !== "all") rows = rows.filter(passArr);
+  }
+
   if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
 
   const by = new Map();
@@ -1232,15 +1285,35 @@ function renderHist() {
   const toggle = document.getElementById("histModeToggle");
   const showPct = !!(toggle && toggle.checked);
 
-  const haveDayHist = state.data.histDayCat && state.data.histDayCat.length > 0;
-  const useDay = haveDayHist && (hasDayFilter() || hasWeekdayFilter() || hasTimeFilter());
-  const base = useDay ? state.data.histDayCat : state.data.histMonthCat;
-  const keyField = useDay ? "giorno" : "mese";
+  const stationFiltered = hasStationFilter();
+  let base, keyField, useDay;
+
+  if (stationFiltered) {
+    const haveStDay = state.data.histStationsDayRuolo && state.data.histStationsDayRuolo.length > 0;
+    useDay = haveStDay && (hasDayFilter() || hasWeekdayFilter() || hasTimeFilter());
+    base = useDay ? state.data.histStationsDayRuolo : state.data.histStationsMonthRuolo;
+    keyField = useDay ? "giorno" : "mese";
+  } else {
+    const haveDayHist = state.data.histDayCat && state.data.histDayCat.length > 0;
+    useDay = haveDayHist && (hasDayFilter() || hasWeekdayFilter() || hasTimeFilter());
+    base = useDay ? state.data.histDayCat : state.data.histMonthCat;
+    keyField = useDay ? "giorno" : "mese";
+  }
 
   let rows = base || [];
 
   if (state.filters.year !== "all") rows = rows.filter((r) => passYear(r, keyField));
   if (state.filters.cat !== "all") rows = rows.filter(passCat);
+
+  if (stationFiltered) {
+    const dep = state.filters.dep;
+    const arr = state.filters.arr;
+    if (arr !== "all") {
+      rows = rows.filter((r) => String(r.cod_stazione || "").trim() === arr && String(r.ruolo || "").trim() === "arrivo");
+    } else if (dep !== "all") {
+      rows = rows.filter((r) => String(r.cod_stazione || "").trim() === dep && String(r.ruolo || "").trim() === "partenza");
+    }
+  }
 
   if (useDay) rows = rows.filter((r) => passDayKey(r, "giorno"));
   else if (hasDayFilter()) rows = rows.filter((r) => passMonthFromDayRange(r, "mese"));
@@ -1661,7 +1734,9 @@ async function loadAll() {
     "stazioni_mese_categoria_nodo.csv",
     "stazioni_giorno_categoria_nodo.csv",
     "od_mese_categoria.csv",
-    "od_giorno_categoria.csv"
+    "od_giorno_categoria.csv",
+    "hist_stazioni_mese_categoria_ruolo.csv",
+    "hist_stazioni_giorno_categoria_ruolo.csv"
   ]);
 
   const texts = await Promise.all(wanted.map((f) => fetchTextAny(candidateFilePaths(base, f))));
@@ -1682,6 +1757,8 @@ async function loadAll() {
   state.data.stationsDayNode = parsed["stazioni_giorno_categoria_nodo.csv"] || [];
   state.data.odMonthCat = parsed["od_mese_categoria.csv"] || [];
   state.data.odDayCat = parsed["od_giorno_categoria.csv"] || [];
+  state.data.histStationsMonthRuolo = parsed["hist_stazioni_mese_categoria_ruolo.csv"] || [];
+  state.data.histStationsDayRuolo = parsed["hist_stazioni_giorno_categoria_ruolo.csv"] || [];
 
   const stRows = await loadStationsDimAnyBase(base);
 

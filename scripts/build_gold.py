@@ -214,6 +214,37 @@ def build_gold(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, pd.DataFrame]
     ).reset_index()
     out["hist_giorno_categoria"] = h_d
 
+    # Station-level histogram: departure and arrival perspectives
+    dep_hist = df.copy()
+    dep_hist["cod_stazione"] = dep_hist["cod_partenza"]
+    dep_hist["ruolo"] = "partenza"
+
+    arr_hist = df.copy()
+    arr_hist["cod_stazione"] = arr_hist["cod_arrivo"]
+    arr_hist["ruolo"] = "arrivo"
+
+    hist_station_src = pd.concat([dep_hist, arr_hist], ignore_index=True)
+
+    h_st_m = hist_station_src.groupby(
+        ["mese", "categoria", "cod_stazione", "ruolo", "bucket_ritardo_arrivo"],
+        dropna=False,
+    ).agg(
+        count=("_obs_id", "count"),
+        minuti_ritardo=("minuti_ritardo", "sum"),
+        minuti_anticipo=("minuti_anticipo", "sum"),
+    ).reset_index()
+    out["hist_stazioni_mese_categoria_ruolo"] = h_st_m
+
+    h_st_d = hist_station_src.groupby(
+        ["giorno", "ora", "categoria", "cod_stazione", "ruolo", "bucket_ritardo_arrivo"],
+        dropna=False,
+    ).agg(
+        count=("_obs_id", "count"),
+        minuti_ritardo=("minuti_ritardo", "sum"),
+        minuti_anticipo=("minuti_anticipo", "sum"),
+    ).reset_index()
+    out["hist_stazioni_giorno_categoria_ruolo"] = h_st_d
+
     od_m = agg_core(["mese", "categoria", "cod_partenza", "cod_arrivo"], df)
     od_d = agg_core(["giorno", "ora", "categoria", "cod_partenza", "cod_arrivo"], df)
 
@@ -323,6 +354,8 @@ def gold_keys() -> Dict[str, List[str]]:
         "kpi_mese": ["mese"],
         "hist_mese_categoria": ["mese", "categoria", "bucket_ritardo_arrivo"],
         "hist_giorno_categoria": ["giorno", "ora", "categoria", "bucket_ritardo_arrivo"],
+        "hist_stazioni_mese_categoria_ruolo": ["mese", "categoria", "cod_stazione", "ruolo", "bucket_ritardo_arrivo"],
+        "hist_stazioni_giorno_categoria_ruolo": ["giorno", "ora", "categoria", "cod_stazione", "ruolo", "bucket_ritardo_arrivo"],
         "od_mese_categoria": ["mese", "categoria", "cod_partenza", "cod_arrivo"],
         "od_giorno_categoria": ["giorno", "ora", "categoria", "cod_partenza", "cod_arrivo"],
         "stazioni_mese_categoria_ruolo": ["mese", "categoria", "cod_stazione", "ruolo"],
