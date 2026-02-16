@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import io
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
 import pandas as pd
 
@@ -13,17 +13,20 @@ from .utils import ensure_dir, http_get_with_retry, load_yaml
 ISTAT_COMUNI_URL = "https://www.istat.it/storage/codici-unita-amministrative/Elenco-comuni-italiani.csv"
 
 
-def load_gold_station_table() -> pd.DataFrame:
-    p = os.path.join("data", "gold", "stazioni_mese_categoria_nodo.csv")
-    if not os.path.exists(p):
-        raise FileNotFoundError(f"missing gold table: {p}")
-    return pd.read_csv(p, dtype=str)
+def _read_csv_if_exists(path: str) -> Optional[pd.DataFrame]:
+    if not os.path.exists(path):
+        return None
+    try:
+        return pd.read_csv(path, dtype=str)
+    except Exception:
+        return None
 
 
 def load_station_registry_or_empty() -> pd.DataFrame:
     p = os.path.join("data", "stations", "stations.csv")
     if not os.path.exists(p):
         df = pd.DataFrame({"cod_stazione": pd.Series([], dtype=str)})
+        df["nome_stazione"] = pd.Series([], dtype=str)
         df["lat"] = pd.Series([], dtype=float)
         df["lon"] = pd.Series([], dtype=float)
         df["citta"] = pd.Series([], dtype=str)
@@ -44,6 +47,9 @@ def load_station_registry_or_empty() -> pd.DataFrame:
 
     df["cod_stazione"] = df["cod_stazione"].astype(str).str.strip()
 
+    if "nome_stazione" not in df.columns:
+        df["nome_stazione"] = ""
+
     for c in ("lat", "lon"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -58,16 +64,15 @@ def load_station_registry_or_empty() -> pd.DataFrame:
     if "citta" not in df.columns:
         df["citta"] = ""
 
-    keep = ["cod_stazione", "nome_stazione", "lat", "lon", "citta"]
-    for k in keep:
-        if k not in df.columns:
-            df[k] = "" if k in ("nome_stazione", "citta") else pd.NA
-    df = df[keep].copy()
-
     df["nome_stazione"] = df["nome_stazione"].astype(str).fillna("").str.strip()
     df["citta"] = df["citta"].astype(str).fillna("").str.strip()
 
-    return df
+    keep = ["cod_stazione", "nome_stazione", "lat", "lon", "citta"]
+    for k in keep:
+        if k not in df.columns:
+            df[k] = "" if k in ("cod_stazione", "nome_stazione", "citta") else pd.NA
+
+    return df[keep].copy()
 
 
 def _pick_col(cols: list[str], must_contain: str) -> Optional[str]:
@@ -99,7 +104,12 @@ def build_capoluoghi_provincia_csv(cfg: Dict[str, Any]) -> pd.DataFrame:
     backoff = int(net.get("backoff_factor", 2))
 
     try:
-        r = http_get_with_retry(ISTAT_COMUNI_URL, timeout=timeout, max_retries=max_retries, backoff_factor=backoff)
+        r = http_get_with_retry(
+            ISTAT_COMUNI_URL,
+            timeout=timeout,
+            max_retries=max_retries,
+            backoff_factor=backoff,
+        )
         raw = r.content.decode("utf-8", errors="replace")
         df = pd.read_csv(io.StringIO(raw), sep=";", dtype=str)
         df.columns = [str(c).strip() for c in df.columns]
@@ -133,20 +143,52 @@ def build_capoluoghi_provincia_csv(cfg: Dict[str, Any]) -> pd.DataFrame:
         return out
 
 
+def _load_station_seed_from_gold() -> Tuple[pd.DataFrame, str]:
+    p1 = os.path.join("data", "gold", "stazioni_mese_categoria_nodo.csv")
+    p2 = os.path.join("data", "gold", "stazioni_mese_categoria_ruolo.csv")
+    p3 = os.path.join("data", "gold", "od_mese_categoria.csv")
+
+    df = _read_csv_if_exists(p1)
+    if df is not None and len(df) > 0:
+        if "cod_stazione" in df.columns and "nome_stazione" in df.columns:
+            out = df[["cod_stazione", "nome_stazione"]].drop_duplicates()
+            out["cod_stazione"] = out["cod_stazione"].astype(str).str.strip()
+            out["nome_stazione"] = out["nome_stazione"].astype(str).fillna("").str.strip()
+            out = out[out["cod_stazione"] != ""]
+            return out, "stazioni_mese_categoria_nodo"
+
+    df = _read_csv_if_exists(p2)
+    if df is not None and len(df) > 0:
+        if "cod_stazione" in df.columns and "nome_stazione" in df.columns:
+            out = df[["cod_stazione", "nome_stazione"]].drop_duplicates()
+            out["cod_stazione"] = out["cod_stazione"].astype(str).str.strip()
+            out["nome_stazione"] = out["nome_stazione"].astype(str).fillna("").str.strip()
+            out = out[out["cod_stazione"] != ""]
+            return out, "stazioni_mese_categoria_ruolo"
+
+    df = _read_csv_if_exists(p3)
+    if df is not None and len(df) > 0:
+        needed = {"cod_partenza","nome_partenza","cod_arrivo","nome_arrivo"}
+        if needed.issubset(set(df.columns)):
+            a = df[["cod_partenza","nome_partenza"]].rename(columns={"cod_partenza":"cod_stazione","nome_partenza":"nome_stazione"})
+            b = df[["cod_arrivo","nome_arrivo"]].rename(columns={"cod_arrivo":"cod_stazione","nome_arrivo":"nome_stazione"})
+            out = pd.concat([a, b], ignore_index=True)
+            out["cod_stazione"] = out["cod_stazione"].astype(str).str.strip()
+            out["nome_stazione"] = out["nome_stazione"].astype(str).fillna("").str.strip()
+            out = out[out["cod_stazione"] != ""].drop_duplicates(subset=["cod_stazione"], keep="last")
+            return out, "od_mese_categoria"
+
+    empty = pd.DataFrame({"cod_stazione": [], "nome_stazione": []})
+    return empty, "none"
+
+
 def main() -> None:
     cfg: Dict[str, Any] = load_yaml("config/pipeline.yml")
 
-    gold = load_gold_station_table()
+    seed, seed_src = _load_station_seed_from_gold()
     reg = load_station_registry_or_empty()
 
-    if "cod_stazione" not in gold.columns or "nome_stazione" not in gold.columns:
-        raise ValueError("gold table must contain 'cod_stazione' and 'nome_stazione' columns")
-
-    seen = gold[["cod_stazione", "nome_stazione"]].drop_duplicates().copy()
-    seen["cod_stazione"] = seen["cod_stazione"].astype(str).str.strip()
-    seen["nome_stazione"] = seen["nome_stazione"].astype(str).fillna("").str.strip()
-
-    joined = seen.merge(reg, on="cod_stazione", how="left", suffixes=("", "_reg"))
+    joined = seed.merge(reg, left_on="cod_stazione", right_on="cod_stazione", how="left", suffixes=("", "_reg"))
 
     if "nome_stazione_reg" in joined.columns:
         joined["nome_stazione"] = joined["nome_stazione"].where(joined["nome_stazione"] != "", joined["nome_stazione_reg"])
@@ -163,26 +205,30 @@ def main() -> None:
     joined["lon"] = pd.to_numeric(joined["lon"], errors="coerce")
     joined["citta"] = joined["citta"].astype(str).fillna("").str.strip()
 
-    out_dir = os.path.join("site", "data")
-    ensure_dir(out_dir)
+    out = joined[["cod_stazione", "nome_stazione", "lat", "lon", "citta"]].copy()
 
-    joined_out = joined[["cod_stazione", "nome_stazione", "lat", "lon", "citta"]].copy()
-    joined_out.to_csv(os.path.join(out_dir, "stations_dim.csv"), index=False)
+    ensure_dir(os.path.join("site", "data"))
+    out.to_csv(os.path.join("site", "data", "stations_dim.csv"), index=False)
 
-    missing_cols = ["cod_stazione", "nome_stazione"]
-    missing_mask = joined_out["lat"].isna() | joined_out["lon"].isna()
-    missing = joined_out.loc[missing_mask, missing_cols].drop_duplicates()
+    ensure_dir(os.path.join("data", "gold"))
+    out.to_csv(os.path.join("data", "gold", "stations_dim.csv"), index=False)
+
+    missing_mask = out["lat"].isna() | out["lon"].isna()
+    missing = out.loc[missing_mask, ["cod_stazione", "nome_stazione"]].drop_duplicates()
 
     missing_path = os.path.join("data", "stations", "stations_unknown.csv")
     ensure_dir(os.path.dirname(missing_path))
     missing.to_csv(missing_path, index=False)
 
     cap = build_capoluoghi_provincia_csv(cfg)
-    cap.to_csv(os.path.join(out_dir, "capoluoghi_provincia.csv"), index=False)
+    ensure_dir(os.path.join("site", "data"))
+    cap.to_csv(os.path.join("site", "data", "capoluoghi_provincia.csv"), index=False)
 
     print(
         {
-            "stations_dim_rows": int(len(joined_out)),
+            "stations_seed_source": seed_src,
+            "stations_seed_rows": int(len(seed)),
+            "stations_dim_rows": int(len(out)),
             "stations_with_coords": int((~missing_mask).sum()),
             "stations_missing_coords": int(len(missing)),
             "capoluoghi_rows": int(len(cap)),
