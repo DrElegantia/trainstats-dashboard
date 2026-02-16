@@ -20,6 +20,12 @@ from .utils import (
     safe_int,
 )
 
+from .silver_schema import (
+    code_from_station_name,
+    missing_station_code,
+    normalize_bronze_schema,
+)
+
 
 def list_bronze_files_for_range(d0: date, d1: date) -> List[Tuple[date, str, str]]:
     out: List[Tuple[date, str, str]] = []
@@ -223,6 +229,13 @@ def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
 
     df["nome_partenza"] = df.get("nome_partenza", "").map(normalize_station_name)
     df["nome_arrivo"] = df.get("nome_arrivo", "").map(normalize_station_name)
+
+    # Alcuni bronze (schema "treni") non forniscono codici stazione: deriviamo un codice
+    # stabile dal nome per mantenere le aggregazioni station-level in gold/stations_dim.
+    miss_dep = df["cod_partenza"].map(missing_station_code)
+    miss_arr = df["cod_arrivo"].map(missing_station_code)
+    df.loc[miss_dep, "cod_partenza"] = df.loc[miss_dep, "nome_partenza"].map(code_from_station_name)
+    df.loc[miss_arr, "cod_arrivo"] = df.loc[miss_arr, "nome_arrivo"].map(code_from_station_name)
 
     df["ritardo_partenza_min"] = df.get("ritardo_partenza_raw", "").map(safe_int)
     df["ritardo_arrivo_min"] = df.get("ritardo_arrivo_raw", "").map(safe_int)

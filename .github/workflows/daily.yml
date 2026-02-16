@@ -49,6 +49,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+
+      - name: Fail on unresolved merge markers
+        run: |
+          if rg -n "<<<<<<<|=======|>>>>>>>" --glob "*.py" --glob "*.yml" --glob "*.yaml" .; then
+            echo "Unresolved merge markers found" >&2
+            exit 1
+          fi
+
       - name: Run pipeline
         env:
           START_DATE: ${{ inputs.start_date }}

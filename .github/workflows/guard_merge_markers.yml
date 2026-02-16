@@ -1,0 +1,22 @@
+name: Guard unresolved merge markers
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - work
+
+jobs:
+  check-merge-markers:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail on unresolved merge markers
+        run: |
+          if rg -n "<<<<<<<|=======|>>>>>>>" --glob "*.py" --glob "*.yml" --glob "*.yaml" .; then
+            echo "Unresolved merge markers found" >&2
+            exit 1
+          fi
