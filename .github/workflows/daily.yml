@@ -68,34 +68,23 @@ jobs:
             python -m scripts.run_pipeline
           fi
 
-      - name: Update stations unknown list
+      - name: Verify output files
+        run: |
+          echo "=== Checking data/gold ==="
+          ls -lah data/gold/ || echo "data/gold not found"
+          
+          echo "=== Checking docs/data ==="
+          ls -lah docs/data/ || echo "docs/data not found"
+          
+          echo "=== Gold CSV files ==="
+          find data/gold -name "*.csv" -type f || true
+          
+          echo "=== Docs data files ==="
+          find docs/data -name "*.csv" -type f || true
+
+      - name: Update stations unknown list (optional)
         run: |
           python -m scripts.update_stations || true
-
-      - name: Build docs/data for GitHub Pages
-        run: |
-          set -euo pipefail
-
-          mkdir -p docs/data
-          touch docs/.nojekyll
-
-          rm -f docs/data/*.csv || true
-          rm -f docs/data/*.json || true
-
-          cp -v data/gold/*.csv docs/data/ || true
-
-          if [ -f site/data/capoluoghi_provincia.csv ]; then
-            cp -v site/data/capoluoghi_provincia.csv docs/data/capoluoghi_provincia.csv
-          fi
-
-          if [ -f site/data/manifest.json ]; then
-            cp -v site/data/manifest.json docs/data/manifest.json
-          elif [ -f data/gold/manifest.json ]; then
-            cp -v data/gold/manifest.json docs/data/manifest.json
-          fi
-
-          echo "Docs data tree:"
-          ls -la docs/data
 
       - name: Commit generated data and docs
         run: |
@@ -104,7 +93,7 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
 
-          git add data/ docs/ site/data/ || true
+          git add data/ docs/ || true
 
           if git diff --cached --quiet; then
             echo "No changes to commit"
