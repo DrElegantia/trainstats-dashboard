@@ -7,7 +7,7 @@ import sys
 from datetime import date, timedelta
 from typing import Optional, Set
 
-from .utils import load_yaml, today_in_tz
+from .utils import load_yaml, parse_cli_date, today_in_tz
 
 
 def call(cmd: list[str]) -> None:
@@ -39,31 +39,6 @@ def expand_to_month_start(d0: date, d1: date) -> tuple[date, date]:
     """
     start_month = date(d0.year, d0.month, 1)
     return start_month, d1
-
-
-def parse_cli_date(value: str, field_name: str) -> date:
-    """Parse date input with guardrails for common YYYY-DD-MM typos."""
-    try:
-        return date.fromisoformat(value)
-    except ValueError as exc:
-        parts = value.split("-")
-        if len(parts) == 3 and all(p.isdigit() for p in parts):
-            y, m, d = parts
-            mm = int(m)
-            dd = int(d)
-            if mm > 12 and 1 <= dd <= 12:
-                fixed = f"{int(y):04d}-{dd:02d}-{mm:02d}"
-                try:
-                    return date.fromisoformat(fixed)
-                except ValueError:
-                    pass
-                raise SystemExit(
-                    f"Invalid {field_name} '{value}'. Did you mean '{fixed}'?"
-                ) from exc
-
-        raise SystemExit(
-            f"Invalid {field_name} '{value}'. Expected format YYYY-MM-DD."
-        ) from exc
 
 
 def silver_path_for_month_key(month_key: str) -> str:
