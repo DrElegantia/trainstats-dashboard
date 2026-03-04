@@ -181,6 +181,10 @@
         <div class="card-desc">Distribuzione dei treni per fascia di ritardo all'arrivo (minuti). Mostra quanti treni rientrano in ciascun intervallo.</div>
         <div class="filter-badges" id="badgesHist"></div>
         <div id="chartHist" class="chart"></div>
+        <div id="costIndicator" class="cost-indicator" style="display:none;">
+          <span class="cost-label">Costo stimato pro capite dei ritardi (&gt;5 min) <span class="info-tip" data-tooltip="Stima basata sul PIL pro capite italiano&#10;(~&euro;37.000/anno = &euro;0,0704/minuto).&#10;Conta solo i minuti di ritardo&#10;dei treni con ritardo &gt; 5 minuti.">&#9432;</span></span>
+          <span class="cost-value" id="costValue"></span>
+        </div>
       </div>
     </div>
     <div class="card collapsible card--collapsed" data-view="map">

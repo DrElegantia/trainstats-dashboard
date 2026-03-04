@@ -80,9 +80,97 @@ function uniq(arr) { return Array.from(new Set(arr)); }
 
 function isMobile() { return window.innerWidth <= 600; }
 
+/* ────────────────── debounce helper ────────────────── */
+
+let _renderTimer = null;
+function debouncedRenderAll(delay) {
+  if (_renderTimer) clearTimeout(_renderTimer);
+  const ms = delay !== undefined ? delay : (isMobile() ? 120 : 50);
+  _renderTimer = setTimeout(() => { _renderTimer = null; renderAll(); }, ms);
+}
+
+/**
+ * Debounced full filter pipeline: waits for rapid filter changes to settle,
+ * then loads required data and renders once.
+ * Prevents multiple concurrent ensureDataForCurrentFilters() calls.
+ */
+let _pipelineTimer = null;
+let _pipelineRunning = false;
+let _pipelineQueued = false;
+function scheduleFilterPipeline() {
+  if (_pipelineTimer) clearTimeout(_pipelineTimer);
+  // Cancel any pending render-only debounce too
+  if (_renderTimer) { clearTimeout(_renderTimer); _renderTimer = null; }
+  const ms = isMobile() ? 300 : 80;
+  _pipelineTimer = setTimeout(async () => {
+    _pipelineTimer = null;
+    if (_pipelineRunning) { _pipelineQueued = true; return; }
+    _pipelineRunning = true;
+    try {
+      await ensureDataForCurrentFilters();
+      renderAll();
+    } catch (e) {
+      console.error("Filter pipeline error:", e);
+    } finally {
+      _pipelineRunning = false;
+      // If a filter change arrived while we were running, process it now
+      if (_pipelineQueued) { _pipelineQueued = false; scheduleFilterPipeline(); }
+    }
+  }, ms);
+}
+
+/* ────────────────── filter‑result cache ────────────────── */
+
+const _filterCache = { key: "", kpi: null, series: null, hist: null, stationsRows: null, mapRows: null };
+
+function filterFingerprint() {
+  const f = state.filters;
+  return JSON.stringify([
+    f.year, f.cat, f.dep, f.arr, f.month_from, f.month_to,
+    f.day_types, f.time_slots,
+    (state.data.kpiMonthCat || []).length,
+    (state.data.kpiDetailCat || []).length,
+    (state.data.odMonthCat || []).length,
+    (state.data.odDetailCat || []).length,
+    (state.data.stationsMonthNode || []).length,
+    (state.data.stationsDetailNode || []).length
+  ]);
+}
+
+function invalidateFilterCache() { _filterCache.key = ""; }
+
+function getCachedOrFilter(slot, filterFn) {
+  const fp = filterFingerprint();
+  if (_filterCache.key !== fp) {
+    _filterCache.key = fp;
+    _filterCache.kpi = null;
+    _filterCache.series = null;
+    _filterCache.hist = null;
+    _filterCache.stationsRows = null;
+    _filterCache.mapRows = null;
+  }
+  if (!_filterCache[slot]) _filterCache[slot] = filterFn();
+  return _filterCache[slot];
+}
+
 function mobileChartMargins(desktop) {
   if (!isMobile()) return desktop;
   return { l: Math.min(desktop.l || 50, 35), r: Math.min(desktop.r || 20, 10), t: Math.min(desktop.t || 10, 5), b: Math.min(desktop.b || 50, 40) };
+}
+
+/** On mobile, purge old Plotly chart before re-rendering to free memory. */
+function safePlotlyReact(el, data, layout, config) {
+  try {
+    if (isMobile() && el && el.data) Plotly.purge(el);
+    Plotly.react(el, data, layout, config);
+  } catch (e) {
+    console.error("Plotly render error for #" + (el && el.id), e);
+  }
+}
+
+/** On mobile, use lines-only (no markers = fewer SVG elements). */
+function mobileTraceMode() {
+  return isMobile() ? "lines" : "lines+markers";
 }
 
 function mobileFont() {
@@ -167,6 +255,50 @@ function parseCSV(text) {
     rows.push(obj);
   }
   return rows;
+}
+
+/**
+ * Async chunked CSV parser – yields to the browser every CHUNK_SIZE rows
+ * so the main thread stays responsive on mobile.
+ */
+function parseCSVAsync(text, chunkSize, filterFn) {
+  return new Promise(function(resolve) {
+    var t = String(text || "").trim();
+    if (!t) { resolve([]); return; }
+    var lines = t.split(/\r?\n/);
+    t = null;  // Free the original text – we only need the lines array now
+    // Remove empty lines in-place to avoid creating another full array
+    var write = 0;
+    for (var r = 0; r < lines.length; r++) {
+      if (lines[r].length) lines[write++] = lines[r];
+    }
+    lines.length = write;
+    if (lines.length <= 1) { resolve([]); return; }
+    var delim = detectDelimiter(lines[0]);
+    var header = splitCSVLine(lines[0], delim).map(function(x) { return String(x || "").trim(); });
+    var rows = [];
+    var CHUNK = chunkSize || 5000;
+    var idx = 1;
+    function chunk() {
+      var end = Math.min(idx + CHUNK, lines.length);
+      for (; idx < end; idx++) {
+        var line = lines[idx];
+        lines[idx] = null;  // Release processed line for GC
+        if (!line || !line.trim()) continue;
+        var cols = splitCSVLine(line, delim);
+        var obj = {};
+        for (var j = 0; j < header.length; j++) obj[header[j]] = cols[j] ?? "";
+        if (!filterFn || filterFn(obj)) rows.push(obj);
+      }
+      if (idx < lines.length) {
+        setTimeout(chunk, 0);
+      } else {
+        lines = null;  // Release the lines array
+        resolve(rows);
+      }
+    }
+    chunk();
+  });
 }
 
 /* ────────────────── format helpers ────────────────── */
@@ -547,7 +679,7 @@ function initToggleControls() {
     b.onclick = () => {
       state.filters.day_types[i] = !state.filters.day_types[i];
       b.classList.toggle("off", !state.filters.day_types[i]);
-      ensureDataForCurrentFilters().then(renderAll);
+      scheduleFilterPipeline();
     };
     dayTypeWrap.appendChild(b);
   });
@@ -563,7 +695,7 @@ function initToggleControls() {
     b.onclick = () => {
       state.filters.time_slots[i] = !state.filters.time_slots[i];
       b.classList.toggle("off", !state.filters.time_slots[i]);
-      ensureDataForCurrentFilters().then(renderAll);
+      scheduleFilterPipeline();
     };
     timeSlotWrap.appendChild(b);
   });
@@ -677,7 +809,7 @@ function initFilters() {
     yearSel.appendChild(new Option("Tutti", "all"));
     years.forEach((y) => yearSel.appendChild(new Option(y, y)));
     yearSel.value = state.filters.year || "all";
-    yearSel.onchange = () => { state.filters.year = yearSel.value || "all"; renderAll(); };
+    yearSel.onchange = () => { state.filters.year = yearSel.value || "all"; invalidateLazyOnYearChange(); scheduleFilterPipeline(); };
   }
 
   if (catSel) {
@@ -685,7 +817,7 @@ function initFilters() {
     catSel.appendChild(new Option("Tutte", "all"));
     cats.forEach((c) => catSel.appendChild(new Option(categoryDisplayName(c), c)));
     catSel.value = state.filters.cat || "all";
-    catSel.onchange = () => { state.filters.cat = catSel.value || "all"; renderAll(); };
+    catSel.onchange = () => { state.filters.cat = catSel.value || "all"; scheduleFilterPipeline(); };
   }
 
   let deps, arrs;
@@ -716,7 +848,7 @@ function initFilters() {
     depSel.value = state.filters.dep || "all";
     depSel.onchange = () => {
       state.filters.dep = depSel.value || "all"; updateDepAliases();
-      ensureDataForCurrentFilters().then(renderAll);
+      scheduleFilterPipeline();
     };
   }
 
@@ -726,7 +858,7 @@ function initFilters() {
     arrSel.value = state.filters.arr || "all";
     arrSel.onchange = () => {
       state.filters.arr = arrSel.value || "all"; updateArrAliases();
-      ensureDataForCurrentFilters().then(renderAll);
+      scheduleFilterPipeline();
     };
   }
 
@@ -741,19 +873,22 @@ function initFilters() {
     monthFrom.appendChild(new Option("--", ""));
     for (let i = 0; i < 12; i++) monthFrom.appendChild(new Option(MONTH_NAMES[i], String(i + 1).padStart(2, "0")));
     monthFrom.value = state.filters.month_from || "";
-    monthFrom.onchange = () => { state.filters.month_from = monthFrom.value || ""; renderAll(); };
+    monthFrom.onchange = () => { state.filters.month_from = monthFrom.value || ""; scheduleFilterPipeline(); };
   }
   if (monthTo) {
     monthTo.innerHTML = "";
     monthTo.appendChild(new Option("--", ""));
     for (let i = 0; i < 12; i++) monthTo.appendChild(new Option(MONTH_NAMES[i], String(i + 1).padStart(2, "0")));
     monthTo.value = state.filters.month_to || "";
-    monthTo.onchange = () => { state.filters.month_to = monthTo.value || ""; renderAll(); };
+    monthTo.onchange = () => { state.filters.month_to = monthTo.value || ""; scheduleFilterPipeline(); };
   }
 
   if (resetBtn) {
     resetBtn.onclick = () => {
-      state.filters.year = "all";
+      // On mobile, reset to the most recent year (not "all") to keep data light
+      var defaultYear = "all";
+      if (isMobile() && years.length) defaultYear = years[years.length - 1];
+      state.filters.year = defaultYear;
       state.filters.cat = "all";
       state.filters.dep = "all";
       state.filters.arr = "all";
@@ -764,7 +899,7 @@ function initFilters() {
       state._depAliases = null;
       state._arrAliases = null;
 
-      if (yearSel) yearSel.value = "all";
+      if (yearSel) yearSel.value = defaultYear;
       if (catSel) catSel.value = "all";
       if (depSel) depSel.value = "all";
       if (arrSel) arrSel.value = "all";
@@ -772,7 +907,8 @@ function initFilters() {
       if (monthTo) monthTo.value = "";
 
       syncToggleUI();
-      renderAll();
+      invalidateFilterCache();
+      scheduleFilterPipeline();
     };
   }
 }
@@ -908,7 +1044,7 @@ function applyDetailDimFilter(rows) {
 
 /* ────────────────── KPI ────────────────── */
 
-function renderKPI() {
+function _computeKpiRows() {
   const stationFiltered = hasStationFilter();
   let useDetail = useDetailAggregation();
   let base;
@@ -933,6 +1069,11 @@ function renderKPI() {
     if (state.filters.dep !== "all") rows = rows.filter(passDep);
     if (state.filters.arr !== "all") rows = rows.filter(passArr);
   }
+  return rows;
+}
+
+function renderKPI() {
+  const rows = getCachedOrFilter("kpi", _computeKpiRows);
 
   const total = rows.reduce((a, r) => a + toNum(r.corse_osservate), 0);
   const late  = rows.reduce((a, r) => a + toNum(r.in_ritardo), 0);
@@ -969,7 +1110,7 @@ function aggregateByMonth(rows) {
   return Array.from(by.values()).sort((a, b) => String(a.key).localeCompare(String(b.key)));
 }
 
-function getFilteredSeriesRows() {
+function _computeSeriesRows() {
   const stationFiltered = hasStationFilter();
   let useDetail = useDetailAggregation();
   let rows;
@@ -1000,6 +1141,10 @@ function getFilteredSeriesRows() {
   return rows;
 }
 
+function getFilteredSeriesRows() {
+  return getCachedOrFilter("series", _computeSeriesRows);
+}
+
 function seriesMonthly() {
   const rows = getFilteredSeriesRows();
   const out = aggregateByMonth(rows);
@@ -1028,8 +1173,8 @@ function renderSeries() {
 
   if (diEl && !isCardCollapsed(diEl)) {
     const di = seriesDelayIndex();
-    Plotly.react(diEl,
-      [{ x: di.x, y: di.y, type: "scatter", mode: "lines+markers", name: "Delay Index (%)", line: { color: "#e11d48" } }],
+    safePlotlyReact(diEl,
+      [{ x: di.x, y: di.y, type: "scatter", mode: mobileTraceMode(), name: "Delay Index (%)", line: { color: "#e11d48" } }],
       { margin:mobileChartMargins({l:55,r:20,t:10,b:50}), yaxis:{title:isMobile()?"":"Delay Index (%)",rangemode:"tozero"}, xaxis:{type:"category"}, paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)", font:mobileFont() },
       { displayModeBar: false, responsive: true }
     );
@@ -1038,8 +1183,8 @@ function renderSeries() {
   if (mEl && !isCardCollapsed(mEl)) {
     const m = seriesMonthly();
     const yTitle = metricLabel();
-    Plotly.react(mEl,
-      [{ x: m.x, y: m.y, type: "scatter", mode: "lines+markers", name: yTitle }],
+    safePlotlyReact(mEl,
+      [{ x: m.x, y: m.y, type: "scatter", mode: mobileTraceMode(), name: yTitle }],
       { margin:mobileChartMargins({l:50,r:20,t:10,b:50}), yaxis:{title:isMobile()?"":yTitle,rangemode:"tozero"}, xaxis:{type:"category"}, paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)", font:mobileFont() },
       { displayModeBar: false, responsive: true }
     );
@@ -1049,6 +1194,19 @@ function renderSeries() {
 /* ────────────────── render histogram ────────────────── */
 
 function normalizeBucketLabel(s) { return String(s || "").replace(/\s+/g, "").trim(); }
+
+/** Return true if a histogram bucket label represents delay > 5 minutes.
+ *  Matches: (5,10], (10,15], (15,30], (30,60], (60,120], > 120 */
+function isBucketOver5(label) {
+  var s = String(label || "").trim();
+  if (s.startsWith(">")) return true;
+  // Extract lower bound from "(lower,upper]"
+  var m = s.match(/\((\d+),/);
+  return m ? parseInt(m[1], 10) >= 5 : false;
+}
+
+/** GDP per capita per minute: 37000 / 365 / 24 / 60 */
+var COST_PER_MINUTE = 37000 / (365 * 24 * 60);
 
 function renderHist() {
   if (typeof Plotly !== "object") return;
@@ -1109,6 +1267,7 @@ function renderHist() {
 
   const byBucket = new Map();
   let total = 0;
+  let delayMinsOver5 = 0;
   for (const r of rows) {
     const raw = String(r.bucket_ritardo_arrivo || r.bucket || "").trim();
     if (!raw) continue;
@@ -1117,6 +1276,8 @@ function renderHist() {
     total += c;
     if (!byBucket.has(key)) byBucket.set(key, { label: raw, count: 0 });
     byBucket.get(key).count += c;
+    // Accumulate delay minutes for buckets > 5 min
+    if (isBucketOver5(raw)) delayMinsOver5 += toNum(r.minuti_ritardo);
   }
 
   const order = Array.isArray(state.manifest.delay_bucket_labels) && state.manifest.delay_bucket_labels.length
@@ -1131,11 +1292,26 @@ function renderHist() {
     y.push(showPct ? (total > 0 ? (c / total) * 100 : 0) : c);
   }
 
-  Plotly.react(chart,
+  safePlotlyReact(chart,
     [{ x, y, type: "bar", name: showPct ? "%" : "Conteggio" }],
     { margin:mobileChartMargins({l:50,r:20,t:10,b:70}), yaxis:{title:isMobile()?"":showPct?"%":"Conteggio",rangemode:"tozero"}, xaxis:{tickangle:isMobile()?-45:-35,tickfont:{size:isMobile()?7:undefined}}, paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)", font:mobileFont() },
     { displayModeBar: false, responsive: true }
   );
+
+  // Cost indicator: GDP per-capita cost of delays > 5 min
+  var costEl = document.getElementById("costIndicator");
+  var costVal = document.getElementById("costValue");
+  if (costEl && costVal) {
+    if (delayMinsOver5 > 0) {
+      var cost = delayMinsOver5 * COST_PER_MINUTE;
+      costVal.textContent = cost >= 1000
+        ? "\u20AC " + (cost / 1000).toFixed(1) + "k"
+        : "\u20AC " + cost.toFixed(2);
+      costEl.style.display = "";
+    } else {
+      costEl.style.display = "none";
+    }
+  }
 }
 
 /* ────────────────── map helpers ────────────────── */
@@ -1168,6 +1344,17 @@ function stationsMetricLabel() {
   return labels[m] || m;
 }
 
+/* ────────────────── stations filtered rows (cached) ────────────────── */
+
+function _computeStationsRows() {
+  const useDetail = useDetailAggregation() && state.data.stationsDetailNode && state.data.stationsDetailNode.length > 0;
+  const base = useDetail ? state.data.stationsDetailNode : state.data.stationsMonthNode;
+  let rows = base || [];
+  rows = applyCommonFilters(rows, "mese");
+  if (useDetail) rows = applyDetailDimFilter(rows);
+  return rows;
+}
+
 /* ────────────────── stations top 10 (capoluoghi only) ────────────────── */
 
 function renderStationsTop10() {
@@ -1175,12 +1362,7 @@ function renderStationsTop10() {
   const chart = document.getElementById("chartStationsTop10");
   if (!chart || isCardCollapsed(chart)) return;
 
-  const useDetail = useDetailAggregation() && state.data.stationsDetailNode && state.data.stationsDetailNode.length > 0;
-  const base = useDetail ? state.data.stationsDetailNode : state.data.stationsMonthNode;
-
-  let rows = base || [];
-  rows = applyCommonFilters(rows, "mese");
-  if (useDetail) rows = applyDetailDimFilter(rows);
+  const rows = getCachedOrFilter("stationsRows", _computeStationsRows);
 
   // Aggregate by capoluogo (provincial capital) instead of individual station
   const agg = new Map();
@@ -1215,7 +1397,7 @@ function renderStationsTop10() {
   const xValues = top10.map((o) => toNum(o[metric]));
   const label = stationsMetricLabel();
 
-  Plotly.react(chart,
+  safePlotlyReact(chart,
     [{ x:xValues, y:yLabels, type:"bar", orientation:"h", name:label, marker:{color:"rgba(0,115,230,0.70)"} }],
     { margin:isMobile()?{l:10,r:10,t:10,b:40}:{l:180,r:30,t:10,b:50}, xaxis:{title:isMobile()?"":label,rangemode:"tozero"}, yaxis:{automargin:true}, paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)", font:mobileFont() },
     { displayModeBar: false, responsive: true }
@@ -1235,12 +1417,7 @@ function renderMap() {
 
   clearMarkers();
 
-  const useDetail = useDetailAggregation() && state.data.stationsDetailNode && state.data.stationsDetailNode.length > 0;
-  const base = useDetail ? state.data.stationsDetailNode : state.data.stationsMonthNode;
-
-  let rows = base || [];
-  rows = applyCommonFilters(rows, "mese");
-  if (useDetail) rows = applyDetailDimFilter(rows);
+  const rows = getCachedOrFilter("stationsRows", _computeStationsRows);
 
   const agg = new Map();
   for (const r of rows) {
@@ -1299,18 +1476,100 @@ function renderMap() {
   setTimeout(() => { try { state.map.invalidateSize(); } catch {} }, 100);
 }
 
+/* ────────────────── mobile memory management ────────────────── */
+
+/**
+ * On mobile, release heavy datasets that are no longer required by the
+ * current filter combination.  This prevents holding 150+ MB of parsed
+ * objects in memory simultaneously — the main cause of OOM crashes.
+ */
+function releaseUnusedDatasets() {
+  if (!isMobile()) return;
+  const station = hasStationFilter();
+  const detail  = hasDetailFilter();
+
+  // Detail datasets — only needed when a detail filter (day type / time slot) is active
+  if (!detail) {
+    if (state.data.kpiDetailCat.length)            { state.data.kpiDetailCat = [];            delete _lazyLoaded["kpi_dettaglio_categoria.csv"]; }
+    if (state.data.histDetailCat.length)            { state.data.histDetailCat = [];            delete _lazyLoaded["hist_dettaglio_categoria.csv"]; }
+    if (state.data.stationsDetailNode.length)       { state.data.stationsDetailNode = [];       delete _lazyLoaded["stazioni_dettaglio_categoria_nodo.csv"]; }
+    if (state.data.histStationsDetailRuolo.length)  { state.data.histStationsDetailRuolo = [];  delete _lazyLoaded["hist_stazioni_dettaglio_categoria_ruolo.csv"]; }
+    if (state.data.odDetailCat.length)              { state.data.odDetailCat = [];              delete _lazyLoaded["od_dettaglio_categoria.csv"]; }
+  }
+
+  // Station (OD) datasets — only needed when dep/arr is set
+  if (!station) {
+    if (state.data.odMonthCat.length)               { state.data.odMonthCat = [];               delete _lazyLoaded["od_mese_categoria.csv"]; }
+    if (state.data.odDetailCat.length)              { state.data.odDetailCat = [];              delete _lazyLoaded["od_dettaglio_categoria.csv"]; }
+    if (state.data.histStationsMonthRuolo.length)   { state.data.histStationsMonthRuolo = [];   delete _lazyLoaded["hist_stazioni_mese_categoria_ruolo.csv"]; }
+    if (state.data.histStationsDetailRuolo.length)  { state.data.histStationsDetailRuolo = [];  delete _lazyLoaded["hist_stazioni_dettaglio_categoria_ruolo.csv"]; }
+  }
+
+  invalidateFilterCache();
+}
+
 /* ────────────────── mobile lazy loading ────────────────── */
 
 const _lazyLoaded = {};
+const _lazyLoading = {};  // Track in-progress loads to prevent duplicate concurrent fetches
+
+/**
+ * On mobile, build a row filter that drops rows outside the selected year
+ * during parsing. This avoids allocating 200k+ objects that will immediately
+ * be discarded by the filter pipeline.
+ */
+function mobileYearFilter() {
+  if (!isMobile()) return null;
+  var y = state.filters.year;
+  if (!y || y === "all") return null;
+  return function(row) {
+    var m = row.mese || "";
+    return m.slice(0, 4) === y;
+  };
+}
+
+/** On mobile, when the year changes, flush all lazy-loaded data so it
+ *  gets re-fetched and re-filtered for the new year. */
+function invalidateLazyOnYearChange() {
+  if (!isMobile()) return;
+  var keys = Object.keys(_lazyLoaded);
+  for (var i = 0; i < keys.length; i++) delete _lazyLoaded[keys[i]];
+  // Clear the corresponding state arrays
+  var slotMap = {
+    "od_mese_categoria.csv": "odMonthCat",
+    "od_dettaglio_categoria.csv": "odDetailCat",
+    "hist_stazioni_mese_categoria_ruolo.csv": "histStationsMonthRuolo",
+    "hist_stazioni_dettaglio_categoria_ruolo.csv": "histStationsDetailRuolo",
+    "kpi_dettaglio_categoria.csv": "kpiDetailCat",
+    "hist_dettaglio_categoria.csv": "histDetailCat",
+    "stazioni_dettaglio_categoria_nodo.csv": "stationsDetailNode",
+    "stazioni_mese_categoria_nodo.csv": "stationsMonthNode"
+  };
+  for (var file in slotMap) {
+    if (state.data[slotMap[file]]) state.data[slotMap[file]] = [];
+  }
+  invalidateFilterCache();
+}
 
 async function lazyLoadCSV(fileName, stateKey) {
   if (_lazyLoaded[fileName]) return;
   if (state.data[stateKey] && state.data[stateKey].length > 0) { _lazyLoaded[fileName] = true; return; }
-  const t = await fetchTextAny(candidateFilePaths(state.dataBase, fileName));
-  state.data[stateKey] = t ? parseCSV(t) : [];
-  _lazyLoaded[fileName] = true;
-  // Re-enrich stationsRef with any new code→name mappings from the loaded data
-  enrichStationsRefFromFacts();
+  // If this file is already being loaded, wait for the existing load instead of starting a new one
+  if (_lazyLoading[fileName]) return _lazyLoading[fileName];
+  _lazyLoading[fileName] = (async function() {
+    try {
+      var t = await fetchTextAny(candidateFilePaths(state.dataBase, fileName));
+      var rows = t ? await parseCSVAsync(t, 5000, mobileYearFilter()) : [];
+      t = null;  // Release text reference for GC
+      state.data[stateKey] = rows;
+      _lazyLoaded[fileName] = true;
+      invalidateFilterCache();
+      enrichStationsRefFromFacts();
+    } finally {
+      delete _lazyLoading[fileName];
+    }
+  })();
+  return _lazyLoading[fileName];
 }
 
 async function ensureStationsData() {
@@ -1334,40 +1593,75 @@ async function ensureHistStationsDetailData() {
 }
 
 async function ensureDetailData() {
-  await Promise.all([
-    lazyLoadCSV("kpi_dettaglio_categoria.csv", "kpiDetailCat"),
-    lazyLoadCSV("hist_dettaglio_categoria.csv", "histDetailCat")
-  ]);
+  if (isMobile()) {
+    await lazyLoadCSV("kpi_dettaglio_categoria.csv", "kpiDetailCat");
+    await lazyLoadCSV("hist_dettaglio_categoria.csv", "histDetailCat");
+  } else {
+    await Promise.all([
+      lazyLoadCSV("kpi_dettaglio_categoria.csv", "kpiDetailCat"),
+      lazyLoadCSV("hist_dettaglio_categoria.csv", "histDetailCat")
+    ]);
+  }
+}
+
+async function ensureStationsDetailNodeData() {
+  await lazyLoadCSV("stazioni_dettaglio_categoria_nodo.csv", "stationsDetailNode");
 }
 
 /* Load all station-specific detail datasets needed when combining station + detail filters */
 async function ensureStationDetailData() {
-  await Promise.all([
-    ensureOdDetailData(),
-    ensureHistStationsDetailData()
-  ]);
+  if (isMobile()) {
+    await ensureOdDetailData();
+    await ensureHistStationsDetailData();
+  } else {
+    await Promise.all([
+      ensureOdDetailData(),
+      ensureHistStationsDetailData()
+    ]);
+  }
 }
 
 /**
  * Ensure all datasets needed for the current filter combination are loaded.
  * Call this before renderAll() whenever filters change.
+ * On mobile, loads are sequential to limit peak memory usage and
+ * unused datasets are released first to free memory before new loads.
  */
 async function ensureDataForCurrentFilters() {
-  const loads = [];
   const station = hasStationFilter();
   const detail = hasDetailFilter();
 
-  if (station) {
-    loads.push(ensureOdData());
-    loads.push(ensureHistStationsData());
+  // On mobile, release datasets no longer required BEFORE loading new ones
+  releaseUnusedDatasets();
+
+  if (isMobile()) {
+    // Sequential loading on mobile to limit peak memory
+    if (station) {
+      await ensureOdData();
+      await ensureHistStationsData();
+    }
+    if (detail) {
+      await ensureDetailData();
+      await ensureStationsDetailNodeData();
+    }
+    if (station && detail) {
+      await ensureStationDetailData();
+    }
+  } else {
+    const loads = [];
+    if (station) {
+      loads.push(ensureOdData());
+      loads.push(ensureHistStationsData());
+    }
+    if (detail) {
+      loads.push(ensureDetailData());
+      loads.push(ensureStationsDetailNodeData());
+    }
+    if (station && detail) {
+      loads.push(ensureStationDetailData());
+    }
+    if (loads.length) await Promise.all(loads);
   }
-  if (detail) {
-    loads.push(ensureDetailData());
-  }
-  if (station && detail) {
-    loads.push(ensureStationDetailData());
-  }
-  if (loads.length) await Promise.all(loads);
 }
 
 /* ────────────────── collapsible extra filters ────────────────── */
@@ -1512,10 +1806,27 @@ function renderFilterBadges() {
 function renderAll() {
   renderFilterBadges();
   renderKPI();
-  renderSeries();
-  renderHist();
-  renderStationsTop10();
-  renderMap();
+
+  if (isMobile()) {
+    // Stagger heavy chart renders across animation frames so the browser
+    // can reclaim memory between draws and keep the UI responsive.
+    // Each render is wrapped in try-catch so one failure doesn't block the rest.
+    requestAnimationFrame(() => {
+      try { renderSeries(); } catch (e) { console.error("renderSeries error:", e); }
+      requestAnimationFrame(() => {
+        try { renderHist(); } catch (e) { console.error("renderHist error:", e); }
+        requestAnimationFrame(() => {
+          try { renderStationsTop10(); } catch (e) { console.error("renderStationsTop10 error:", e); }
+          requestAnimationFrame(() => { try { renderMap(); } catch (e) { console.error("renderMap error:", e); } });
+        });
+      });
+    });
+  } else {
+    renderSeries();
+    renderHist();
+    renderStationsTop10();
+    renderMap();
+  }
 }
 
 /* ────────────────── data loading ────────────────── */
@@ -1605,7 +1916,7 @@ async function loadAll() {
 
   const parsed = {};
   for (let i = 0; i < toFetch.length; i++) {
-    parsed[toFetch[i]] = texts[i] ? parseCSV(texts[i]) : [];
+    parsed[toFetch[i]] = texts[i] ? await parseCSVAsync(texts[i]) : [];
   }
 
   state.data.kpiMonth              = parsed["kpi_mese.csv"] || [];
@@ -1660,6 +1971,13 @@ async function loadAll() {
   document.addEventListener("click", function() {
     document.querySelectorAll(".info-tip.tip-active").forEach(function(t) { t.classList.remove("tip-active"); });
   });
+
+  // On mobile, default to the most recent year so we only process ~12 months
+  // instead of the full 36+. Users can still select "Tutti" if they want.
+  if (isMobile() && state.filters.year === "all") {
+    const years = uniq(state.data.kpiMonth.map((r) => yearFromMonth(r.mese)).filter(Boolean)).sort();
+    if (years.length) state.filters.year = years[years.length - 1];
+  }
 
   initFilters();
   initToggleControls();
