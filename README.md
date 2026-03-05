@@ -92,4 +92,6 @@ I dati provengono da [TrainStats](https://trainstats.altervista.org/). Questo pr
 
 ## Licenza
 
-Questo progetto è rilasciato con la massima libertà d’uso. Chiunque può copiare, modificare, distribuire e utilizzare il codice e i dati derivati per qualsiasi scopo, senza necessità di autorizzazione preventiva, a condizione che venga sempre riconosciuta l’attribuzione agli autori originari e al progetto.
+Questo progetto è distribuito sotto i termini della **GNU General Public License v3.0**.
+
+Il testo completo e ufficiale della licenza è disponibile qui: https://www.gnu.org/licenses/gpl-3.0.html
