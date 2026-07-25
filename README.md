@@ -118,7 +118,7 @@ Per il backfill manuale si usa `workflow_dispatch` con parametri `start_date` e 
 
 ## Anagrafica stazioni
 
-`stations/stations.csv` contiene le coordinate delle stazioni ed è versionato nel repository. La pipeline non fa geocoding online. La mappa nella dashboard non si rompe se mancano coordinate: semplicemente non disegna quei marker.
+`stations/stations.csv` contiene le coordinate delle stazioni ed è versionato nel repository. Il geocoding online e disattivato per default: si attiva a mano con `python -m scripts.build_station_dim --enable-geocoding`, come manutenzione, mai nel run notturno. La mappa nella dashboard non si rompe se mancano coordinate: semplicemente non disegna quei marker.
 
 ## Troubleshooting
 

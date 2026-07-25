@@ -11,6 +11,8 @@ from typing import Dict, Set, Optional, Tuple
 import pandas as pd
 import pyarrow.parquet as pq
 
+from .utils import normalize_station_name
+
 try:
     from geopy.geocoders import Nominatim
     from geopy.exc import GeocoderTimedOut, GeocoderServiceError
@@ -23,35 +25,20 @@ def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
-# ---------------------------------------------------------------------------
-# Abbreviazioni ferroviarie italiane: usate per normalizzare i nomi stazione
-# in modo che "BOLOGNA C.LE" e "BOLOGNA CENTRALE" producano la stessa chiave.
-# ---------------------------------------------------------------------------
-_ABBR_MAP = [
-    (r"\bC\.LE\.?(?=\s|$)", "CENTRALE"),
-    (r"\bC\.L\.E\.?(?=\s|$)", "CENTRALE"),
-    (r"\bP\.TA(?=\s|$)", "PORTA"),
-    (r"\bP\.ZA(?=\s|$)", "PIAZZA"),
-    (r"\bP\.ZZA(?=\s|$)", "PIAZZA"),
-    (r"\bS\.M\.N\.?(?=\s|$)", "SANTA MARIA NOVELLA"),
-    (r"\bS\.M\.(?=\s|$)", "SANTA MARIA"),
-    (r"\bSS\.(?=\s|$)", "SANTI"),
-    (r"\bS\.(?=\s?\w)", "SAN "),
-    (r"\bF\.S\.(?=\s|$)", ""),
-    (r"\bFS(?=\s|$)", ""),
-    (r"\bM\.MO(?=\s|$)", "MARITTIMO"),
-    (r"\bMAR\.MO(?=\s|$)", "MARITTIMO"),
-]
-
-
 def _normalize_for_match(name: str) -> str:
-    """Normalizza il nome stazione per il matching (espande abbreviazioni)."""
-    s = str(name).strip().upper()
-    for pattern, repl in _ABBR_MAP:
-        s = re.sub(pattern, repl, s)
-    s = re.sub(r"['\"\-]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    """Normalizza il nome stazione per il matching delle coordinate.
+
+    Delega a normalize_station_name, che e' la stessa normalizzazione usata dal
+    raggruppamento dei codici stazione e dalla dashboard.
+
+    Qui viveva una seconda tabella di abbreviazioni, simile ma non uguale:
+    espandeva "S." in "SAN" mentre quella condivisa fa collassare San/Santa/
+    Santo su un unico token. Con due normalizzazioni divergenti il match per
+    nome falliva, e cinque stazioni (S ZENO FOLZANO, S MARGHERITA LIGURE
+    PORTOFINO, BOLOGNA S RUFFILLO, S GIULIANO TERME, BARI S SPIRITO) perdevano
+    le coordinate che la cache conteneva.
+    """
+    return normalize_station_name(name)
 
 
 def collect_station_directory() -> Dict[str, str]:
@@ -171,6 +158,12 @@ def clean_station_name(name: str) -> str:
     return name.strip()
 
 
+# Oltre questa soglia di fallimenti consecutivi il geocoding viene abbandonato:
+# significa che il servizio sta rate-limitando e ogni ulteriore tentativo
+# aggiunge solo attese.
+MAX_CONSECUTIVE_GEOCODE_FAILURES = 10
+
+
 def geocode_station(geolocator, name: str) -> Optional[Tuple[float, float]]:
     """Geocodifica un nome stazione aggiungendo ', Italy' per contesto."""
     if not name:
@@ -247,6 +240,7 @@ def build_station_dim(enable_geocoding: bool = True) -> pd.DataFrame:
     # ---- Stazioni trovate nel silver corrente ----
     records = []
     geocoded_count = 0
+    consecutive_failures = 0
     name_matched_count = 0
     failed_count = 0
 
@@ -271,10 +265,21 @@ def build_station_dim(enable_geocoding: bool = True) -> pd.DataFrame:
                 if coords:
                     lat, lon = coords
                     geocoded_count += 1
+                    consecutive_failures = 0
                     print(f"OK ({lat}, {lon})")
                 else:
                     failed_count += 1
+                    consecutive_failures += 1
                     print("FAILED")
+                    # Quando Nominatim inizia a rifiutare (429) rifiuta tutto:
+                    # insistere aggiunge solo ore di attese inutili.
+                    if consecutive_failures >= MAX_CONSECUTIVE_GEOCODE_FAILURES:
+                        print(
+                            f"  Interrotto il geocoding dopo {consecutive_failures} "
+                            "fallimenti consecutivi: il servizio sta rifiutando le "
+                            "richieste. Le stazioni restanti restano senza coordinate."
+                        )
+                        geolocator = None
 
         records.append({
             "cod_stazione": code,
@@ -376,19 +381,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--disable-geocoding",
         action="store_true",
-        help="Do not query Nominatim for unresolved station names",
+        help="Ignorato: il geocoding e' disattivato per default. Mantenuto per compatibilita'.",
+    )
+    parser.add_argument(
+        "--enable-geocoding",
+        action="store_true",
+        help="Interroga Nominatim per le stazioni senza coordinate. Attivita' di "
+             "manutenzione da lanciare a mano, non dentro il run notturno.",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    # In CI prefer deterministic builds: avoid external geocoding unless explicitly enabled.
-    ci_default_disable = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
-    enable_geocoding = not (args.disable_geocoding or ci_default_disable)
+
+    # Il geocoding online e' OPT-IN, non piu' il default fuori dalla CI.
+    #
+    # Con 1.304 stazioni senza coordinate, tre query ciascuna e una pausa di
+    # circa un secondo fra i tentativi, una passata completa impiega ore. E non
+    # produce nulla: Nominatim risponde 429 a un uso di questo volume, quindi
+    # ogni stazione fallisce dopo tre tentativi e altrettante attese. La catena
+    # run_pipeline restava appesa esattamente qui, mentre il README dichiarava
+    # (correttamente, nelle intenzioni) che "la pipeline non fa geocoding online".
+    #
+    # Le coordinate vivono nella cache versionata stations/stations.csv. Per
+    # arricchirla si lancia questo modulo con --enable-geocoding, come
+    # manutenzione esplicita.
+    enable_geocoding = args.enable_geocoding and not args.disable_geocoding
 
     if not enable_geocoding:
-        print("Running without online geocoding")
+        print("Geocoding online disattivato (usare --enable-geocoding per attivarlo)")
 
     df = build_station_dim(enable_geocoding=enable_geocoding)
     if df.empty:
