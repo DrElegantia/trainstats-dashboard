@@ -242,7 +242,17 @@ def build_station_dim(enable_geocoding: bool = True) -> pd.DataFrame:
     geocoded_count = 0
     consecutive_failures = 0
     name_matched_count = 0
+    osm_matched_count = 0
     failed_count = 0
+
+    try:
+        from .coordinate_osm import indice_osm
+        osm_coords = indice_osm()
+        print(f"Anagrafica OpenStreetMap: {len(osm_coords)} stazioni")
+    except Exception as e:
+        osm_coords = {}
+        print(f"Anagrafica OpenStreetMap non disponibile ({e}): "
+              "aggiornarla con python -m scripts.coordinate_osm --scarica")
 
     seen_codes: Set[str] = set()
 
@@ -259,6 +269,14 @@ def build_station_dim(enable_geocoding: bool = True) -> pd.DataFrame:
             if norm_name and norm_name in name_coords:
                 lat, lon = name_coords[norm_name]
                 name_matched_count += 1
+            elif norm_name and norm_name in osm_coords:
+                # I nodi railway=station di OpenStreetMap. Prima di questa fonte
+                # restavano senza coordinate 1.261 stazioni, e le altre venivano
+                # da Nominatim a testo libero, che non cerca stazioni: cercando
+                # "Venezia Santa Lucia" restituiva una frazione in provincia di
+                # Pordenone, 655 km fuori posto. Vedi scripts/coordinate_osm.py.
+                lat, lon = osm_coords[norm_name]
+                osm_matched_count += 1
             elif geolocator and name:
                 print(f"  Geocoding: {code} -> {name}...", end=" ")
                 coords = geocode_station(geolocator, name)
@@ -305,6 +323,7 @@ def build_station_dim(enable_geocoding: bool = True) -> pd.DataFrame:
             cache_added += 1
 
     print(f"\nStation dim summary: {name_matched_count} name-matched, "
+          f"{osm_matched_count} da OpenStreetMap, "
           f"{geocoded_count} geocoded, {failed_count} failed, "
           f"{cache_added} from cache (not in silver)")
 

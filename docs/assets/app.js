@@ -1904,9 +1904,25 @@ function renderMap() {
   const volumes = top.map((p) => Math.max(0, toNum(p.corse_osservate)));
   const maxVolume = volumes.length ? Math.max(...volumes) : 0;
 
+  // Stazioni troppo poco osservate perche' una percentuale voglia dire qualcosa.
+  //
+  // Segnalato da un lettore: Pordenone risultava in ritardo nel 45% dei casi,
+  // su tre corse. Non e' un errore di estrazione, e' che il dato copre solo
+  // origine e destinazione di ogni corsa, e Pordenone e' una stazione di
+  // transito: i treni ci fermano ma non ci nascono ne' ci finiscono. Tre corse
+  // restano tre corse, e il 45% non e' una statistica.
+  //
+  // Non si nascondono: sparire dalla mappa e' peggio che comparire con una
+  // riserva. Si disegnano in grigio, con il conteggio nel popup, e restano
+  // fuori dalla scala di colore, altrimenti un valore estremo calcolato su tre
+  // osservazioni allarga la rampa e sbiadisce tutte le altre.
+  const SOGLIA_CORSE = 30;
+  const affidabile = (p) => Math.max(0, toNum(p.corse_osservate)) >= SOGLIA_CORSE;
+
   // Scala di colore su percentili: i valori sono molto asimmetrici e una scala
   // lineare sul massimo appiattirebbe quasi tutto sul primo colore.
-  const sorted = values.slice().sort((a, b) => a - b);
+  const sorted = top.filter(affidabile).map((p) => Math.max(0, Number(p.v) || 0))
+    .sort((a, b) => a - b);
   const quantile = (q) => {
     if (!sorted.length) return 0;
     const i = Math.min(sorted.length - 1, Math.max(0, Math.round(q * (sorted.length - 1))));
@@ -1929,13 +1945,17 @@ function renderMap() {
     const vol = Math.max(0, toNum(p.corse_osservate));
     const ratio = maxVolume > 0 ? Math.sqrt(vol / maxVolume) : 0;
     const radius = minRadius + ratio * (maxRadius - minRadius);
+    const poche = !affidabile(p);
     const label = "<b>" + p.nome + "</b><br>" + metricLabel() + ": " + fmtFloat(val)
-      + "<br>Corse osservate: " + fmtInt(vol);
+      + "<br>Corse osservate: " + fmtInt(vol)
+      + (poche ? "<br><i>Sotto le " + SOGLIA_CORSE + " corse: la percentuale non e' significativa. "
+                 + "Il dato copre solo origine e destinazione, quindi le stazioni di transito "
+                 + "compaiono di rado.</i>" : "");
 
     const m = L.circleMarker([p.coords.lat, p.coords.lon], {
       radius: radius,
-      color: "#333", weight: 0.7, opacity: 0.85,
-      fillColor: colorFor(val), fillOpacity: 0.85
+      color: "#333", weight: 0.7, opacity: poche ? 0.5 : 0.85,
+      fillColor: poche ? "#bdbdbd" : colorFor(val), fillOpacity: poche ? 0.45 : 0.85
     }).addTo(state.map);
     try { m.bindPopup(label); } catch {}
     state.markers.push(m);
