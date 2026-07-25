@@ -10,6 +10,7 @@ from typing import Dict, List, Set
 import pandas as pd
 
 from .build_gold import gold_table_names, read_gold_table
+from .utils import load_yaml
 
 # Tables large enough that the browser should fetch one year at a time instead
 # of the whole history. Each still gets a full-history file for callers that
@@ -64,18 +65,19 @@ def compact_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def collect_station_names(tables: Dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """Build one code -> name lookup covering every code in the fact tables."""
-    pairs: Dict[str, str] = {}
-    for df in tables.values():
-        for code_col, name_col in CODE_NAME_PAIRS:
-            if code_col not in df.columns or name_col not in df.columns:
-                continue
-            sub = df[[code_col, name_col]].dropna().drop_duplicates(subset=[code_col])
-            for code, name in zip(sub[code_col].astype(str), sub[name_col].astype(str)):
-                code, name = code.strip(), name.strip()
-                if code and name and code not in pairs:
-                    pairs[code] = name
+def harvest_station_names(df: pd.DataFrame, pairs: Dict[str, str]) -> None:
+    """Accumula le coppie codice -> nome trovate in una tabella."""
+    for code_col, name_col in CODE_NAME_PAIRS:
+        if code_col not in df.columns or name_col not in df.columns:
+            continue
+        sub = df[[code_col, name_col]].dropna().drop_duplicates(subset=[code_col])
+        for code, name in zip(sub[code_col].astype(str), sub[name_col].astype(str)):
+            code, name = code.strip(), name.strip()
+            if code and name and code not in pairs:
+                pairs[code] = name
+
+
+def station_names_frame(pairs: Dict[str, str]) -> pd.DataFrame:
     return pd.DataFrame(sorted(pairs.items()), columns=["cod_stazione", "nome_stazione"])
 
 
@@ -132,32 +134,53 @@ def main() -> None:
     if not names:
         raise SystemExit("missing data/gold, run scripts.build_gold first")
 
-    tables: Dict[str, pd.DataFrame] = {}
+    # Due passate deliberate. Tenere tutte le tabelle gold in memoria insieme
+    # significherebbe oltre un gigabyte di DataFrame, piu' di quanto un runner
+    # CI conceda; qui ogni tabella viene letta, usata e rilasciata. La prima
+    # passata raccoglie i nomi, che devono essere completi prima di poterli
+    # rimuovere dalle tabelle nella seconda.
+    pairs: Dict[str, str] = {}
+    present: List[str] = []
     for name in names:
         df = read_gold_table(name)
         if df.empty:
             print(f"  skipping {name}: no rows")
             continue
-        tables[name] = df
+        present.append(name)
+        harvest_station_names(df, pairs)
+        del df
 
-    names_df = collect_station_names(tables)
+    if not present:
+        raise SystemExit("nessuna tabella gold con righe: eseguire prima scripts.build_gold")
+
+    names_df = station_names_frame(pairs)
     names_df.to_csv(target / "station_names.csv", index=False)
     print(f"Wrote station_names.csv ({len(names_df)} stazioni)")
 
     files: List[str] = ["station_names.csv"]
     years: Set[str] = set()
-    for name, df in tables.items():
-        compact = compact_frame(strip_name_columns(df))
+    for name in present:
+        compact = compact_frame(strip_name_columns(read_gold_table(name)))
         if "mese" in compact.columns:
             years.update(compact["mese"].astype(str).str.slice(0, 4).unique())
         written = write_table(compact, target, name)
         files.extend(written)
         print(f"Wrote {name}: {len(compact)} righe in {len(written)} file")
+        del compact
+
+    # Le etichette dei bucket vengono dalla configurazione della pipeline, cosi'
+    # l'asse dell'istogramma resta allineato ai bucket effettivamente prodotti
+    # invece di dipendere dai default hard-coded nel JS.
+    try:
+        bucket_labels = load_yaml("config/pipeline.yml")["delay_buckets_minutes"]["labels"]
+    except Exception:
+        bucket_labels = []
 
     manifest = {
         "built_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-        "gold_files": sorted(f"{n}.csv" for n in tables),
-        "year_sharded": sorted(n for n in tables if n in YEAR_SHARDED),
+        "gold_files": sorted(f"{n}.csv" for n in present),
+        "delay_bucket_labels": bucket_labels,
+        "year_sharded": sorted(n for n in present if n in YEAR_SHARDED),
         "years": sorted(y for y in years if y.isdigit()),
         "station_names_file": "station_names.csv",
     }

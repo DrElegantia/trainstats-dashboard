@@ -258,8 +258,35 @@ function parseCSV(text) {
 }
 
 /**
- * Async chunked CSV parser – yields to the browser every CHUNK_SIZE rows
- * so the main thread stays responsive on mobile.
+ * Yield back to the event loop without the nested-setTimeout clamp.
+ *
+ * Browsers force setTimeout(fn, 0) to a 4 ms minimum once the callbacks nest
+ * more than five deep, which is exactly what a chunked parser does. On the
+ * largest table that was ~300 yields of pure idle waiting. A MessageChannel
+ * message is delivered on the next macrotask with no such floor.
+ */
+var _yieldChannel = (typeof MessageChannel === "function") ? new MessageChannel() : null;
+var _yieldQueue = [];
+if (_yieldChannel) {
+  _yieldChannel.port1.onmessage = function() {
+    var fn = _yieldQueue.shift();
+    if (fn) fn();
+  };
+}
+function yieldToBrowser(fn) {
+  if (!_yieldChannel) { setTimeout(fn, 0); return; }
+  _yieldQueue.push(fn);
+  _yieldChannel.port2.postMessage(0);
+}
+
+/**
+ * Async CSV parser that yields on a time budget rather than a fixed row count,
+ * so the main thread stays responsive without over-yielding.
+ *
+ * A fixed chunk size cannot be right for every table: 5000 rows of the KPI
+ * table parse in well under a frame, while 5000 rows of the wide station
+ * histogram take much longer. Measuring elapsed time instead keeps each slice
+ * near one frame whatever the row width.
  */
 function parseCSVAsync(text, chunkSize, filterFn) {
   return new Promise(function(resolve) {
@@ -276,22 +303,33 @@ function parseCSVAsync(text, chunkSize, filterFn) {
     if (lines.length <= 1) { resolve([]); return; }
     var delim = detectDelimiter(lines[0]);
     var header = splitCSVLine(lines[0], delim).map(function(x) { return String(x || "").trim(); });
+    var nCols = header.length;
     var rows = [];
-    var CHUNK = chunkSize || 5000;
+    // Rows checked between clock reads: reading the clock per row would cost
+    // more than the work it is timing.
+    var BATCH = Math.max(256, Math.min(chunkSize || 2048, 8192));
+    var SLICE_MS = 12;
     var idx = 1;
+
     function chunk() {
-      var end = Math.min(idx + CHUNK, lines.length);
-      for (; idx < end; idx++) {
-        var line = lines[idx];
-        lines[idx] = null;  // Release processed line for GC
-        if (!line || !line.trim()) continue;
-        var cols = splitCSVLine(line, delim);
-        var obj = {};
-        for (var j = 0; j < header.length; j++) obj[header[j]] = cols[j] ?? "";
-        if (!filterFn || filterFn(obj)) rows.push(obj);
+      var started = (typeof performance === "object" && performance.now) ? performance.now() : Date.now();
+      while (idx < lines.length) {
+        var end = Math.min(idx + BATCH, lines.length);
+        for (; idx < end; idx++) {
+          var line = lines[idx];
+          lines[idx] = null;  // Release processed line for GC
+          if (!line || !line.trim()) continue;
+          var cols = splitCSVLine(line, delim);
+          var obj = {};
+          for (var j = 0; j < nCols; j++) obj[header[j]] = cols[j] ?? "";
+          if (!filterFn || filterFn(obj)) rows.push(obj);
+        }
+        var now = (typeof performance === "object" && performance.now) ? performance.now() : Date.now();
+        if (now - started >= SLICE_MS) break;
       }
+
       if (idx < lines.length) {
-        setTimeout(chunk, 0);
+        yieldToBrowser(chunk);
       } else {
         lines = null;  // Release the lines array
         resolve(rows);
@@ -1435,6 +1473,10 @@ function renderHist() {
     const raw = String(r.bucket_ritardo_arrivo || r.bucket || "").trim();
     if (!raw) continue;
     const key = normalizeBucketLabel(raw);
+    // "missing" collects the runs with no usable arrival measurement, above
+    // all the suppressed ones. It has no bar of its own, so counting it in
+    // the total would make the percentage bars quietly sum to less than 100.
+    if (key === "missing") continue;
     const c = toNum(r.count);
     total += c;
     if (!byBucket.has(key)) byBucket.set(key, { label: raw, count: 0 });
