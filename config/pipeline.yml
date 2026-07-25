@@ -23,7 +23,20 @@ punctuality:
 # how single-observation routes ended up displaying -85 minutes.
 # Values outside the window count as "not measured", never as zero.
 delay_validity:
-  min_minutes: -90
+  # Scelta editoriale: un arrivo con piu' di 5 minuti di anticipo non viene
+  # considerato una misura attendibile e non entra in nessuna statistica.
+  #
+  # Il dato osservato e' sfumato. Gli anticipi entro 5 minuti sono il 44% delle
+  # corse e sono fisiologici (arrotondamento dell'orario e margini di recupero).
+  # Fra 5 e 10 minuti ci sono 319.673 corse, e solo il 2,7% appartiene a treni
+  # che lo fanno abitualmente: il resto e' variazione giorno per giorno,
+  # compatibile con margini di recupero non consumati su percorsi lunghi.
+  # Escludere sopra i 5 minuti scarta quindi anche qualche misura probabilmente
+  # buona, ma elimina in blocco una zona in cui la sorgente non e' affidabile.
+  #
+  # Alzare questo valore a -90 riporta il comportamento precedente, in cui
+  # venivano scartati solo i valori fisicamente impossibili.
+  min_minutes: -5
   max_minutes: 1440
 
   # Alcuni treni hanno nella sorgente un orario di ARRIVO sbagliato in modo
@@ -48,14 +61,15 @@ delay_states:
   - effettuato
   - parzialmente_cancellato
 
+# Le classi coprono esattamente la finestra di validita' (delay_validity):
+# le misure fuori finestra finiscono in "missing" e non hanno una barra.
+# Con la soglia a -5 le vecchie classi da -9999 a -10 erano permanentemente
+# vuote, e "(-10,-5]" conteneva solo il valore -5: quattro barre a zero e una
+# etichetta che prometteva un intervallo inesistente.
 delay_buckets_minutes:
-  edges: [-9999, -60, -30, -15, -10, -5, -1, 0, 1, 5, 10, 15, 30, 60, 120, 9999]
+  edges: [-6, -5, -1, 0, 1, 5, 10, 15, 30, 60, 120, 9999]
   labels:
-    - "<= -60"
-    - "(-60,-30]"
-    - "(-30,-15]"
-    - "(-15,-10]"
-    - "(-10,-5]"
+    - "-5"
     - "(-5,-1]"
     - "(-1,0]"
     - "(0,1]"

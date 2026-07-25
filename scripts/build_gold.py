@@ -731,22 +731,24 @@ def save_gold_tables(tables: Dict[str, pd.DataFrame], migrate_legacy: bool = Fal
 
         for mese, part_new in df_new.groupby("mese", dropna=False):
             path = partition_path(name, str(mese))
-            merged = part_new
 
-            if os.path.exists(path):
-                try:
-                    part_old = pd.read_parquet(path)
-                    # Unify station codes in old data before merging, then
-                    # re-aggregate rows whose keys collapsed after remapping
-                    # (the Dec 2025 transition carried both N_ and S_ codes).
-                    part_old = _apply_code_map(part_old, code_map)
-                    part_old = _reaggregate_remapped(part_old, k)
-                    merged = pd.concat([part_old, part_new], ignore_index=True)
-                except Exception as e:
-                    print(f"  WARNING: could not read partition {path} ({e}) — rebuilding it")
-
-            merged = merged.drop_duplicates(subset=k, keep="last").sort_values(k)
-            merged.to_parquet(path, index=False)
+            # La partizione del mese viene SOSTITUITA, non fusa con la
+            # precedente.
+            #
+            # Fondere sembrava prudente ma teneva in vita ogni riga la cui
+            # chiave non esiste piu' nel nuovo calcolo, perche' il dedup per
+            # chiave non puo' cancellare cio' che non ricompare. Cambiando la
+            # soglia di validita' dei ritardi, i bucket dell'istogramma che si
+            # erano svuotati restavano popolati con i conteggi vecchi: 168.480
+            # corse fantasma in classi di anticipo che non dovevano piu'
+            # esistere. Lo stesso meccanismo aveva fatto sopravvivere una
+            # categoria "None" a un rebuild da zero.
+            #
+            # La sostituzione e' corretta perche' ogni mese viene ricalcolato
+            # per intero dal silver, comprese le corse a cavallo del mese, che
+            # arrivano dai mesi adiacenti caricati come contesto in main().
+            part_new = part_new.drop_duplicates(subset=k, keep="last").sort_values(k)
+            part_new.to_parquet(path, index=False)
 
 
 def read_gold_table(name: str) -> pd.DataFrame:
@@ -794,6 +796,24 @@ def _month_keys_between(d0: date, d1: date) -> List[str]:
     return sorted(out)
 
 
+def _shift_month(key: str, delta: int) -> str:
+    y, m = int(key[:4]), int(key[4:])
+    idx = y * 12 + (m - 1) + delta
+    return f"{idx // 12:04d}{idx % 12 + 1:02d}"
+
+
+def _months_with_neighbours(chunk: List[str], available: List[str]) -> List[str]:
+    """Il chunk piu' i mesi confinanti, limitati a quelli che esistono davvero."""
+    have = set(available)
+    out = set(chunk)
+    for key in chunk:
+        for delta in (-1, 1):
+            neighbour = _shift_month(key, delta)
+            if neighbour in have:
+                out.add(neighbour)
+    return sorted(out)
+
+
 def main(months: Optional[List[str]] = None, chunk_size: int = 3, migrate_legacy: bool = False) -> None:
     cfg = load_yaml("config/pipeline.yml")
 
@@ -821,19 +841,21 @@ def main(months: Optional[List[str]] = None, chunk_size: int = 3, migrate_legacy
         chunk = months[i : i + chunk_size]
         print(f"  processing chunk {i // chunk_size + 1}: months {chunk}")
 
-        df = load_silver(chunk)
+        # Il silver del mese M contiene corse la cui partenza cade nel mese
+        # adiacente (treni a cavallo della mezzanotte di fine mese), e
+        # viceversa. Poiche' la partizione del mese viene sostituita e non fusa,
+        # il calcolo di M deve essere completo: si caricano anche i mesi
+        # confinanti come contesto e si tengono poi le sole righe di M.
+        context = _months_with_neighbours(chunk, months)
+        df = load_silver(context)
         if df.empty:
             print(f"  no silver for {chunk}, skipping")
             continue
 
         dfm = build_metrics(cfg, df)
 
-        # Filter to only the requested months.  Silver files for month M may
-        # contain edge-case records whose dt_partenza_prog falls in an adjacent
-        # month (e.g. trains departing near midnight).  If we let those leak
-        # through, save_gold_tables' dedup (keep="last") would overwrite the
-        # correct historical gold rows for that adjacent month with a tiny
-        # partial slice.
+        # Si scrivono solo i mesi del chunk: quelli di contesto verranno (o sono
+        # stati) elaborati dal loro chunk, con il loro contesto.
         month_keys_set = set(chunk)
         mese_keys = dfm["mese"].astype(str).str.replace("-", "")
         dfm = dfm[mese_keys.isin(month_keys_set)].copy()
