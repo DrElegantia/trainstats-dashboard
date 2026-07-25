@@ -414,6 +414,58 @@ con il calcolo diretto in pandas.
 
 ---
 
+## 4.8 Stato finale verificato
+
+Numeri della pipeline dopo tutti gli interventi, con la soglia di validita' a
+-5 minuti. Le tabelle dei paragrafi precedenti descrivono stati intermedi.
+
+| | valore |
+|---|---|
+| righe nel silver | 6.231.961 |
+| corse nel gold | **6.231.961** (nessuna riga persa) |
+| corse con misura di ritardo utilizzabile | 5.899.298 (94,66%) |
+| misure escluse | 332.663 (5,34%) |
+| ritardo medio ponderato | 3,121 min |
+| arrivi puntuali | 82,48% |
+| righe con ritardo medio negativo, in tutto il gold | **0** |
+| corse con anticipo superiore a 5 minuti | **0** |
+| stazioni distinte | 1.732 (erano 2.152, 420 duplicati uniti) |
+| alias di codice stazione unificati | 1.171 |
+
+Invarianti che ora reggono e prima no:
+
+- `silver == gold` sul conteggio corse. Prima 262 righe si perdevano ai bordi
+  dei chunk, perche' il calcolo di un mese non caricava i mesi confinanti.
+- La somma delle corse coincide fra `kpi_mese`, `kpi_mese_categoria` e
+  `od_mese_categoria`. Nel baseline le tabelle per stazione e per coppia O/D
+  erano gonfiate del 2,6%.
+- `corse_osservate - corse_con_misura` corrisponde esattamente alle misure
+  escluse, elencate e contabilizzate.
+
+Distribuzione finale dello scostamento all'arrivo:
+
+| classe | corse | quota |
+|---|---|---|
+| -5 | 140.323 | 2,38% |
+| (-5,-1] | 2.119.830 | 35,93% |
+| (-1,0] | 586.197 | 9,94% |
+| (0,1] | 723.415 | 12,26% |
+| (1,5] | 1.517.838 | 25,73% |
+| (5,10] | 441.188 | 7,48% |
+| (10,15] | 140.304 | 2,38% |
+| (15,30] | 142.872 | 2,42% |
+| (30,60] | 64.964 | 1,10% |
+| (60,120] | 18.562 | 0,31% |
+| > 120 | 3.805 | 0,06% |
+
+Verifica nel browser sulla dashboard pubblicata: Milano Centrale -> Verona
+Porta Nuova, REG, infrasettimanale, sera restituisce 2.117 corse osservate e
+una distribuzione di 1.972 corse misurate **della tratta**, non dei 12.102
+arrivi a Verona da qualunque origine. La mappa disegna 97 marker con cinque
+livelli di colore sulla metrica e sei dimensioni sul volume, con legenda.
+
+---
+
 ## 5. Cosa resta noto e non risolto
 
 - **La distorsione della misura al capolinea e' della sorgente**, non nostra.
