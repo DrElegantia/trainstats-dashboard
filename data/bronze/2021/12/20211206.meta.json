@@ -1,0 +1,20 @@
+{
+  "reference_date": "2021-12-06",
+  "range_start": "2021-12-06",
+  "range_end": "2021-12-06",
+  "extracted_at_utc": "2026-07-25T17:47:25Z",
+  "source_url": "dump_storico:dati_06_12_2021.json",
+  "source_path": "/Users/umbertobertonelli/Downloads/dati_06_12_2021.json",
+  "bytes": 9982758,
+  "header": [
+    "giorno",
+    "timeZone",
+    "riassunto",
+    "avvisiRFI",
+    "avvisiTI",
+    "treni"
+  ],
+  "mode": "day",
+  "treni": 8524,
+  "sha256": "4d32790a37895587ad21a8b01a803b93b943c5719a8bf5721bdfd48cf9ee572f"
+}
