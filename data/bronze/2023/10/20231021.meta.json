@@ -1,0 +1,20 @@
+{
+  "reference_date": "2023-10-21",
+  "range_start": "2023-10-21",
+  "range_end": "2023-10-21",
+  "extracted_at_utc": "2026-07-25T13:37:19Z",
+  "source_url": "dump_storico:dati_21_10_2023.json",
+  "source_path": "/Users/umbertobertonelli/.claude/jobs/3e466877/tmp/mega/dati precedente database (15-05-2022 a 01-11-23)/dati_21_10_2023.json",
+  "bytes": 9718649,
+  "header": [
+    "giorno",
+    "timeZone",
+    "riassunto",
+    "avvisiRFI",
+    "avvisiTI",
+    "treni"
+  ],
+  "mode": "day",
+  "treni": 7121,
+  "sha256": "f13de8ca51474c4dc67268df1e410ac758d8c71252a0ddd0b75f4569f4327c2a"
+}
