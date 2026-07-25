@@ -1,0 +1,19 @@
+{
+  "reference_date": "2019-12-21",
+  "range_start": "2019-12-21",
+  "range_end": "2019-12-21",
+  "extracted_at_utc": "2026-07-25T19:49:34Z",
+  "source_url": "dump_storico_xml:21_12_2019.xml",
+  "bytes": 1717890,
+  "header": [
+    "giorno",
+    "timeZone",
+    "riassunto",
+    "avvisiRFI",
+    "avvisiTI",
+    "treni"
+  ],
+  "mode": "day",
+  "treni": 7593,
+  "sha256": "6ff6677e1bad670595774b219496c025d21683cc5d482dd77f3c5f76fce39fa0"
+}

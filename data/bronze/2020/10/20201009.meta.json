@@ -1,0 +1,20 @@
+{
+  "reference_date": "2020-10-09",
+  "range_start": "2020-10-09",
+  "range_end": "2020-10-09",
+  "extracted_at_utc": "2026-07-25T17:39:43Z",
+  "source_url": "dump_storico:dati_09_10_2020.json",
+  "source_path": "/Users/umbertobertonelli/Downloads/dati_09_10_2020.json",
+  "bytes": 10054796,
+  "header": [
+    "giorno",
+    "timeZone",
+    "riassunto",
+    "avvisiRFI",
+    "avvisiTI",
+    "treni"
+  ],
+  "mode": "day",
+  "treni": 8423,
+  "sha256": "653ae41b68cc3fdd243027e1cc309e5b43eabb182a918f35dfd7b790f4aec758"
+}
