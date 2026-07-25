@@ -1,0 +1,20 @@
+{
+  "reference_date": "2024-05-25",
+  "range_start": "2024-05-25",
+  "range_end": "2024-05-25",
+  "extracted_at_utc": "2026-07-25T23:04:58Z",
+  "source_url": "dump_storico:dati_2024_05_25.json",
+  "source_path": "/Users/umbertobertonelli/.claude/jobs/3e466877/tmp/mega/dati_2024_05_25.json",
+  "bytes": 10150005,
+  "header": [
+    "giorno",
+    "timeZone",
+    "riassunto",
+    "avvisiRFI",
+    "avvisiTI",
+    "treni"
+  ],
+  "mode": "day",
+  "treni": 7543,
+  "sha256": "8f9c2d6e9b0272141d848cae853c9bcd54ec29b5ae912a49da125299ecf9fca8"
+}
