@@ -776,3 +776,16 @@ body.embed-mode .embed-hide {
   .cost-label { font-size: 12px; }
   .cost-value { font-size: 16px; }
 }
+
+/* Feedback quando si prova a spegnere l'ultimo valore incluso di un gruppo:
+   il click e' volutamente rifiutato, altrimenti il gruppo resterebbe vuoto e
+   ogni indicatore andrebbe a zero senza spiegazione. */
+.toggle-pill.pill-locked {
+  animation: pill-shake 0.4s ease;
+  border-color: #c0392b;
+}
+@keyframes pill-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}

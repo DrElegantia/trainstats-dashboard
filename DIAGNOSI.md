@@ -221,7 +221,113 @@ scritto e liberato prima di passare al successivo.
 
 ---
 
-## 4. Cosa resta noto e non risolto
+## 4. Verifica di credibilita' contro la dashboard precedente
+
+Confronto fra il gold ricostruito e il commit `baseline-gold`, che contiene
+l'output della pipeline precedente.
+
+### 4.1 Cosa deve restare identico, e resta identico
+
+Il numero di corse osservate non dipende da nessuno dei fix applicati.
+
+| | baseline | nuovo | delta |
+|---|---|---|---|
+| `kpi_mese`, corse osservate | 6.231.474 | 6.231.699 | +225 (+0,004%) |
+| mesi con scostamento | | | 5 su 26, tutti sotto 0,04% |
+
+Quei 225 record derivano dal fatto che il baseline e' l'accumulo di run
+notturni incrementali, mentre questo e' un rebuild completo in una passata.
+Prova: per novembre 2025 il baseline riporta 247.743 corse, ma il silver di
+quel mese contiene 247.652 righe e zero corse a cavallo del mese. Le 91 righe
+in eccesso del baseline **non sono derivabili dai dati sorgente**.
+
+### 4.2 Un invariante che il baseline violava
+
+Aggregando le stesse osservazioni a granularita' diverse la somma deve
+coincidere. Nel baseline non coincideva:
+
+| tabella | baseline | nuovo |
+|---|---|---|
+| `kpi_mese` | 6.231.474 | 6.231.699 |
+| `kpi_mese_categoria` | 6.391.517 | 6.231.699 |
+| `od_mese_categoria` | 6.392.510 | 6.231.699 |
+
+Il baseline gonfiava del 2,6% le tabelle per stazione e per coppia O/D. La
+causa e' il rimappamento dei codici stazione (`N_` sintetico verso `S` ufficiale,
+transizione di dicembre 2025): nel CSV monolitico convivevano una riga con
+chiave `N_` e una con chiave `S`, e la ri-aggregazione dopo il rimappamento le
+**sommava**.
+
+Verifica puntuale su Milano Centrale, luglio 2024, contando direttamente dal
+silver le partenze il cui nome normalizza a `MILANO CENTRALE`:
+
+| | corse |
+|---|---|
+| **silver (verita' sorgente)** | **6.865** |
+| gold nuovo | 6.865 |
+| gold baseline | 8.696 (+27%) |
+
+La dashboard precedente sovrastimava il traffico proprio delle stazioni piu'
+grandi, quelle che hanno cambiato codice.
+
+### 4.3 Cosa cambia, e perche'
+
+| indicatore | baseline | nuovo | spiegazione |
+|---|---|---|---|
+| righe con ritardo medio negativo | 17.837 | **0** | media con floor a zero (§2.2) |
+| ritardo medio ponderato | 1,91 min | 3,01 min | non sottrae piu' gli anticipi |
+| soppresse | 0,60% | 1,90% | recuperati i campi di stato dello schema legacy (§3.2) |
+| cancellate totali | 0,43% | 3,47% | idem, piu' la corretta separazione parziali/totali |
+| arrivi in orario | 2.642.795 | 2.605.486 | -37.309: i soppressi non contano piu' come puntuali |
+| corse con misura | non presente | 6.113.161 | denominatore corretto: 118.538 corse non hanno arrivo misurabile |
+
+Coerenza: `corse_osservate - corse_con_misura = 118.538`, esattamente il numero
+di soppresse. Nessuna corsa persa per strada.
+
+Esempi sulle tratte segnalate come impossibili (corse invariate):
+
+| tratta | ritardo medio prima | dopo | scostamento medio |
+|---|---|---|---|
+| ROMA TERMINI -> NAPOLI CENTRALE (REG) | -2,92 | **2,91** | -2,97 |
+| GENOVA BRIGNOLE -> ARQUATA SCRIVIA (REG) | -3,53 | **0,76** | -3,53 |
+| BOLOGNA CABINA S.DONATO -> RIMINI (NCL) | -25,51 | **6,79** | -33,75 |
+
+### 4.4 Caricamento, misurato nel browser
+
+Stessa scena su entrambe le versioni (Milano Centrale, infrasettimanale,
+mattina, tutta la storia), servite in locale:
+
+| | baseline | nuovo | nuovo, anno selezionato |
+|---|---|---|---|
+| caricamento dati | 4.254 ms | 2.680 ms | 1.234 ms |
+| render | 121 ms | 116 ms | 66 ms |
+| byte decodificati | 158 MB | 94 MB | 26 MB |
+| righe in memoria | 1.872.841 | 1.887.725 | 520.307 |
+
+Sulla dashboard **in produzione** il caricamento iniziale misurato e' di
+**12,4 secondi**. In locale, con i nuovi dati, il primo render arriva in
+**396 ms** scaricando 233 KB su 8 file.
+
+### 4.5 Bug della dashboard trovato durante la verifica
+
+Segnalazione: con Milano -> Verona, REG, infrasettimanale, sera tutti gli
+indicatori vanno a zero. Riprodotto sulla dashboard in produzione.
+
+I pill di "tipo giornata" e "fascia oraria" nascono **tutti attivi**, perche'
+attivo significa "incluso" e il default e' includere tutto. Cliccare "Sera"
+per *selezionare* la sera quindi la **escludeva**. E niente impediva di
+spegnerli tutti: un gruppo vuoto non seleziona nessuna riga, e l'intera
+dashboard leggeva zero senza dire perche'.
+
+Corretto: il primo click su un gruppo interamente attivo **isola** il valore
+cliccato, e l'ultimo valore incluso di un gruppo non si puo' spegnere.
+Verificato nel browser: Milano Centrale -> Verona P.N., REG -> 12.208 corse;
+click su Infrasettimanale -> 8.638; click su Sera -> **2.117**, che coincide
+con il calcolo diretto in pandas.
+
+---
+
+## 5. Cosa resta noto e non risolto
 
 - **La distorsione della misura al capolinea e' della sorgente**, non nostra.
   Il flooring a zero la rende innocua sulla metrica pubblicata, ma i valori
@@ -236,6 +342,6 @@ scritto e liberato prima di passare al successivo.
   Il run notturno non e' toccato da questo costo.
 - **Le tabelle `stazioni_*_ruolo`** (35 MB) vengono costruite e pubblicate ma la
   dashboard non le carica mai.
-- **L'email con le segnalazioni di bug** citata da UB non e' raggiungibile: e'
-  su `info@umbertobertonelli.it`, che non e' coperto dai connettori Gmail
-  disponibili. Le due caselle accessibili e le issue GitHub non la contengono.
+- **Due giorni mancano alla fonte**: i file bronze del 10 e 11 gennaio 2025
+  contengono solo l'intestazione. Gennaio 2025 e' quindi calcolato su 29 giorni,
+  senza che la dashboard lo segnali.

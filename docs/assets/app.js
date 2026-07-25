@@ -288,6 +288,32 @@ function yieldToBrowser(fn) {
  * histogram take much longer. Measuring elapsed time instead keeps each slice
  * near one frame whatever the row width.
  */
+/**
+ * Build the row decoder for the columns the build publishes as integer codes
+ * (tipo_giorno, fascia_oraria, ruolo, bucket_ritardo_arrivo). Returns null
+ * when the deployed data is not encoded, so older deployments still parse.
+ *
+ * Decoding also makes every row share the same string instance from the
+ * codebook instead of holding its own copy of "infrasettimanale".
+ */
+function buildRowDecoder() {
+  var cb = state.manifest && state.manifest.codebook;
+  if (!cb) return null;
+  var cols = Object.keys(cb).filter(function(c) { return Array.isArray(cb[c]) && cb[c].length; });
+  if (!cols.length) return null;
+
+  return function(obj) {
+    for (var i = 0; i < cols.length; i++) {
+      var col = cols[i];
+      var raw = obj[col];
+      if (raw === undefined || raw === "") continue;
+      var decoded = cb[col][+raw];
+      if (decoded !== undefined) obj[col] = decoded;
+    }
+    return obj;
+  };
+}
+
 function parseCSVAsync(text, chunkSize, filterFn) {
   return new Promise(function(resolve) {
     var t = String(text || "").trim();
@@ -310,6 +336,7 @@ function parseCSVAsync(text, chunkSize, filterFn) {
     var BATCH = Math.max(256, Math.min(chunkSize || 2048, 8192));
     var SLICE_MS = 12;
     var idx = 1;
+    var decode = buildRowDecoder();
 
     function chunk() {
       var started = (typeof performance === "object" && performance.now) ? performance.now() : Date.now();
@@ -322,6 +349,7 @@ function parseCSVAsync(text, chunkSize, filterFn) {
           var cols = splitCSVLine(line, delim);
           var obj = {};
           for (var j = 0; j < nCols; j++) obj[header[j]] = cols[j] ?? "";
+          if (decode) decode(obj);
           if (!filterFn || filterFn(obj)) rows.push(obj);
         }
         var now = (typeof performance === "object" && performance.now) ? performance.now() : Date.now();
@@ -634,7 +662,7 @@ function ensureSearchInput(selectEl, inputId, placeholder, items) {
 /* ────────────────── new filter logic ────────────────── */
 
 function hasDetailFilter() {
-  return state.filters.day_types.some((x) => !x) || state.filters.time_slots.some((x) => !x);
+  return groupIsRestrictive(state.filters.day_types) || groupIsRestrictive(state.filters.time_slots);
 }
 
 function hasStationFilter() {
@@ -688,17 +716,28 @@ function passMonthRange(r, field) {
   return mm >= lo && mm <= hi;
 }
 
+/**
+ * A group with nothing selected excludes every row, which renders the whole
+ * dashboard as zeros with no explanation. togglePillGroup() now prevents
+ * reaching that state through the UI; this is the backstop for any other route
+ * into it (restored state, a future control), where "nothing included" is read
+ * as "no filter on this dimension".
+ */
+function groupIsRestrictive(flags) {
+  return flags.some((x) => !x) && flags.some((x) => x);
+}
+
 function passDetailDimensions(r) {
   // tipo_giorno
   const dt = state.filters.day_types;
-  if (dt.some((x) => !x)) {
+  if (groupIsRestrictive(dt)) {
     const tg = String(r.tipo_giorno || "").trim();
     const idx = DAY_TYPES.indexOf(tg);
     if (idx === -1 || !dt[idx]) return false;
   }
   // fascia_oraria
   const ts = state.filters.time_slots;
-  if (ts.some((x) => !x)) {
+  if (groupIsRestrictive(ts)) {
     const fa = String(r.fascia_oraria || "").trim();
     const idx = TIME_SLOTS.indexOf(fa);
     if (idx === -1 || !ts[idx]) return false;
@@ -708,6 +747,62 @@ function passDetailDimensions(r) {
 
 /* ────────────────── toggle controls init ────────────────── */
 
+/**
+ * Handle a click on a pill of an "included values" group.
+ *
+ * Two traps in the previous behaviour, both of which sent the whole dashboard
+ * to zero without saying why:
+ *
+ *  1. Every pill starts active, because active means "included" and the default
+ *     is "include everything". Clicking "Sera" to *choose* the evening
+ *     therefore excluded it, and the figures went up instead of down. The first
+ *     click on a fully-selected group now isolates the value clicked, which is
+ *     what the gesture is asking for.
+ *
+ *  2. Nothing stopped the user from switching every pill off. An empty group
+ *     matches no row, so every KPI, chart and map marker read zero \u2014 the state
+ *     the "Milano -> Verona, REG, infrasettimanale, sera" report landed in.
+ *     The last active pill of a group can no longer be switched off.
+ */
+function togglePillGroup(flags, index) {
+  const active = flags.filter(Boolean).length;
+
+  if (active === flags.length) {
+    // Gruppo intero attivo: il click vale "solo questo".
+    for (let i = 0; i < flags.length; i++) flags[i] = (i === index);
+    return true;
+  }
+
+  if (flags[index] && active === 1) {
+    // Ultimo valore incluso: spegnerlo non filtrerebbe, azzererebbe.
+    return false;
+  }
+
+  flags[index] = !flags[index];
+  return true;
+}
+
+function buildToggleGroup(wrap, labels, titles, flags) {
+  labels.forEach((label, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "toggle-pill" + (flags[i] ? "" : " off");
+    b.innerText = label;
+    b.title = titles[i];
+    b.onclick = () => {
+      if (!togglePillGroup(flags, i)) {
+        // Feedback minimo: senza questo il click sembra semplicemente ignorato.
+        b.classList.add("pill-locked");
+        setTimeout(() => b.classList.remove("pill-locked"), 400);
+        return;
+      }
+      syncToggleUI();
+      scheduleFilterPipeline();
+    };
+    wrap.appendChild(b);
+  });
+}
+
 function initToggleControls() {
   const dayTypeWrap = document.getElementById("dayTypeWrap");
   const timeSlotWrap = document.getElementById("timeSlotWrap");
@@ -716,37 +811,19 @@ function initToggleControls() {
   // Already built?
   if (dayTypeWrap.children.length) return;
 
-  const dayLabels = ["Infrasettimanale", "Fine settimana"];
-  const dayTitles = ["Luned\u00ec\u2013Venerd\u00ec", "Sabato\u2013Domenica"];
-  dayLabels.forEach((label, i) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "toggle-pill" + (state.filters.day_types[i] ? "" : " off");
-    b.innerText = label;
-    b.title = dayTitles[i];
-    b.onclick = () => {
-      state.filters.day_types[i] = !state.filters.day_types[i];
-      b.classList.toggle("off", !state.filters.day_types[i]);
-      scheduleFilterPipeline();
-    };
-    dayTypeWrap.appendChild(b);
-  });
+  buildToggleGroup(
+    dayTypeWrap,
+    ["Infrasettimanale", "Fine settimana"],
+    ["Luned\u00ec\u2013Venerd\u00ec", "Sabato\u2013Domenica"],
+    state.filters.day_types
+  );
 
-  const slotLabels = ["Mattina", "Tarda mattina", "Pomeriggio", "Sera", "Notte"];
-  const slotTitles = ["6:00\u201308:59", "9:00\u201313:59", "14:00\u201317:59", "18:00\u201321:59", "22:00\u201305:59"];
-  slotLabels.forEach((label, i) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "toggle-pill" + (state.filters.time_slots[i] ? "" : " off");
-    b.innerText = label;
-    b.title = slotTitles[i];
-    b.onclick = () => {
-      state.filters.time_slots[i] = !state.filters.time_slots[i];
-      b.classList.toggle("off", !state.filters.time_slots[i]);
-      scheduleFilterPipeline();
-    };
-    timeSlotWrap.appendChild(b);
-  });
+  buildToggleGroup(
+    timeSlotWrap,
+    ["Mattina", "Tarda mattina", "Pomeriggio", "Sera", "Notte"],
+    ["6:00\u201308:59", "9:00\u201313:59", "14:00\u201317:59", "18:00\u201321:59", "22:00\u201305:59"],
+    state.filters.time_slots
+  );
 }
 
 function syncToggleUI() {
