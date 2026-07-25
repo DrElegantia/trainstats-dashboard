@@ -293,6 +293,47 @@ def _hour_to_fascia(h: int) -> str:
     return "notte"
 
 
+# Tolleranza fra data programmata e giorno di rilevazione. Un giorno copre le
+# corse notturne, che il gestore pubblica sul foglio del giorno precedente o
+# successivo; oltre, la data e' incoerente.
+_MAX_SCOSTAMENTO_GIORNI = 2
+
+
+def _riconcilia_data_programmata(df: pd.DataFrame) -> pd.DataFrame:
+    """Riporta al giorno di rilevazione le date programmate incoerenti.
+
+    La sorgente pubblica qualche corsa con una data programmata distante mesi
+    dal giorno in cui e' stata rilevata: 2022-09-16 con partenza dichiarata
+    2022-01-16, stesso giorno del mese e mese corrotto. Sono 40 righe su 11,4
+    milioni, ma finivano nella partizione mensile di un mese che nessun chunk
+    riscrive, e sparivano dal gold senza lasciare traccia: silver e gold non
+    quadravano piu'.
+
+    L'ora resta plausibile in tutti i casi osservati, quindi si sostituisce la
+    sola data, conservando l'orario, e si tiene l'osservazione. Scartarla
+    perderebbe una corsa realmente avvenuta per un errore su un campo.
+    """
+    if "data_riferimento" not in df.columns:
+        return df
+
+    rif = pd.to_datetime(df["data_riferimento"], errors="coerce")
+    part = df["dt_partenza_prog"]
+    scarto = (part.dt.normalize() - rif.dt.normalize()).dt.days.abs()
+    incoerenti = scarto.notna() & (scarto > _MAX_SCOSTAMENTO_GIORNI)
+    n = int(incoerenti.sum())
+    if not n:
+        return df
+
+    df = df.copy()
+    delta = part[incoerenti].dt.normalize() - rif[incoerenti].dt.normalize()
+    df.loc[incoerenti, "dt_partenza_prog"] = part[incoerenti] - delta
+    # L'arrivo si sposta della stessa quantita', cosi' la durata non cambia.
+    arr = df.loc[incoerenti, "dt_arrivo_prog"]
+    df.loc[incoerenti, "dt_arrivo_prog"] = arr - delta
+    print(f"  riconciliate {n} date programmate incoerenti col giorno di rilevazione")
+    return df
+
+
 def build_metrics(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     thr = _get_on_time_threshold(cfg)
     df = df.copy()
@@ -333,6 +374,8 @@ def build_metrics(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
 
     df["dt_partenza_prog"] = pd.to_datetime(df["dt_partenza_prog"], errors="coerce")
     df["dt_arrivo_prog"] = pd.to_datetime(df["dt_arrivo_prog"], errors="coerce")
+
+    df = _riconcilia_data_programmata(df)
 
     df["mese"] = to_month_key(df["dt_partenza_prog"])
     df["anno"] = df["dt_partenza_prog"].dt.year.astype("Int64")

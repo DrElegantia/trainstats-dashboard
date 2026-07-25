@@ -117,6 +117,13 @@ jobs:
       # ModuleNotFoundError a ogni run notturno. Rimosso finche' il modulo non
       # viene effettivamente scritto.
 
+      # Gli invarianti girano PRIMA del commit e senza `|| true`: quasi tutti i
+      # bug corretti in questo repo erano invisibili sulla dashboard e si
+      # vedevano solo come uno scarto fra i conteggi. Se uno rientra, il run
+      # notturno deve fallire invece di pubblicare dati sbagliati.
+      - name: Verifica invarianti
+        run: python -m scripts.verifica_invarianti
+
       - name: Commit generated data and docs
         env:
           BRANCH_NAME: ${{ github.ref_name }}

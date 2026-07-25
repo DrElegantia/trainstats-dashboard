@@ -219,6 +219,39 @@ scriveva solo alla fine: un backfill completo teneva ~6,5 milioni di righe
 residenti insieme, piu' di quanto un runner CI conceda. Ora ogni mese viene
 scritto e liberato prima di passare al successivo.
 
+### 3.11 Corse perse fra silver e gold per una data programmata incoerente
+
+Emerso solo caricando lo storico, perche' e' un difetto dei dump 2022-2023.
+
+La sorgente pubblica qualche corsa con una data programmata lontana mesi dal
+giorno in cui e' stata rilevata, e il giorno del mese resta intatto:
+
+| giorno di rilevazione | partenza dichiarata | treno |
+|---|---|---|
+| 2022-09-16 | 2022-**01**-16 06:20 | 23507 Bari Centrale - Fasano |
+| 2022-10-24 | 2022-**01**-24 02:02 | 4104 Roma Termini - Firenze SMN |
+| 2022-11-20 | 2022-**01**-20 13:15 | 16273 Venezia Mestre - Venezia S. Lucia |
+
+E' il campo mese a essere corrotto, non l'orario. Sono **40 righe su 11,4
+milioni**, ma il danno non era proporzionale alla quantita': il gold e'
+partizionato per mese derivato dalla partenza, e ogni chunk riscrive solo le
+partizioni dei mesi che sta lavorando, caricando i mesi adiacenti come semplice
+contesto. Una riga che dichiara una partenza a nove mesi di distanza non e' mai
+presente quando la sua partizione viene scritta: **spariva dal gold senza
+lasciare traccia**, e silver e gold non quadravano piu' (11.369.628 contro
+11.369.595). Cinque di quelle righe puntavano a gennaio 2022, un mese per cui
+non esiste alcun silver, quindi nemmeno una partizione dove atterrare.
+
+`_riconcilia_data_programmata` riporta la data al giorno di rilevazione
+conservando l'orario, e sposta l'arrivo della stessa quantita' cosi' che la
+durata programmata non cambi. Le corse notturne pubblicate sul foglio del
+giorno precedente o successivo restano intatte: la tolleranza e' di due giorni.
+
+Vale la pena notare come il difetto e' stato trovato. Nessuna dashboard lo
+mostrava, nessun numero appariva assurdo: si vedeva solo perche' l'invariante
+"silver e gold devono contare le stesse corse" e' verificato a ogni
+ricostruzione. Uno scarto di 33 righe su 11 milioni non si nota a occhio.
+
 ---
 
 ## 4. Verifica di credibilita' contro la dashboard precedente
@@ -519,5 +552,99 @@ sul campo che la partizione mensile risolve anche la crescita del repository.
 - **Le tabelle `stazioni_*_ruolo`** (35 MB) vengono costruite e pubblicate ma la
   dashboard non le carica mai.
 - **Due giorni mancano alla fonte**: i file bronze del 10 e 11 gennaio 2025
-  contengono solo l'intestazione. Gennaio 2025 e' quindi calcolato su 29 giorni,
-  senza che la dashboard lo segnali.
+  contengono solo l'intestazione. Rifacendo la stessa GET oggi la sorgente
+  restituisce ancora zero righe, quindi il buco e' suo e definitivo. Gennaio
+  2025 e' calcolato su 29 giorni, senza che la dashboard lo segnali.
+
+---
+
+## 6. Lo storico dai dump MEGA
+
+### 6.1 Cosa c'e' davvero nell'archivio
+
+`megatools` elencava 645 file: non apriva la cartella `Vecchio sito`, e `ls`
+sui link pubblici pretende un account. Interrogando l'API MEGA e decifrando
+l'albero con la chiave del link, l'archivio reale e':
+
+| cartella | file | GB | periodo |
+|---|---|---|---|
+| `dump old ... - XML` (`old.zip`) | 1 | 0,02 | ott 2019 - feb 2020 |
+| `dump new 11_01_2020-29_02_2020 - JSON` | 50 | 0,78 | gen - feb 2020 |
+| `01-03-2020 31-12-2020` | 303 | 3,37 | mar - dic 2020 |
+| `2021 completo` | 360 | 4,77 | 2021 intero |
+| `prova` | 99 | 0,92 | duplicati del 2020 |
+| `Vecchio sito` (radice) | 44 | 0,65 | gen - 14 feb 2022 |
+| `dati precedente database` | 623 | 9,33 | 15 feb 2022 - nov 2023 |
+| `01_02_2023 a 31_12_2023` | 334 | 5,23 | feb - dic 2023 |
+| radice `Dati TrainStats v2` | 159 | 2,46 | gen - 7 giu 2024 |
+
+**1.973 file, 27,53 GB, 1.600 giornate distinte dall'11 gennaio 2020 al 7
+giugno 2024**, quasi senza interruzioni. Il bronze parte dal giugno 2024:
+lo storico porterebbe la serie da 2 a 6,5 anni.
+
+### 6.2 Quanto e' riconducibile: misurato, non stimato
+
+Il timore era che i dati divergessero troppo. Sui dump 2022-2023 la divergenza
+si e' rivelata modesta.
+
+**Identita' delle stazioni.** Le stazioni storiche sono identificate dal nome,
+non da un codice: il payload legacy non porta codici, quindi il silver le
+marca al 100% con codici sintetici `N_<hash del nome normalizzato>`.
+Normalizzando i nomi, **il 99,46% delle osservazioni storiche trova la
+corrispondente stazione odierna**. Le 14 che non la trovano sono casi reali,
+lo 0,54% del volume: AOSTA (linea sospesa), ROMA TIBURTINA PIAZZALE EST, e una
+decina di fermate minori non piu' servite. La mappa dei codici canonici
+preferisce i codici ufficiali `S` a quelli sintetici, quindi le coordinate di
+`stations_dim.csv` restano valide e la mappa non si rompe.
+
+**Volumi e composizione.** A parita' di campione, cinque giornate per epoca:
+
+| | storico (2022-2023) | odierno (2024-2026) |
+|---|---|---|
+| corse | 37.802 | 39.573 |
+| stazioni distinte | 449 | 544 |
+| REG | 92,2% | 92,0% |
+| MET | 2,80% | 2,75% |
+| IC | 1,16% | 1,31% |
+
+Settembre 2022 completo da' 7.727 corse al giorno, contro le 7.000-8.600 dei
+mesi recenti, con cancellazioni presenti e coerenti (2.488 soppressi, 2.498
+parziali su 231.820 corse).
+
+**Schema.** I record treno hanno le stesse chiavi che la pipeline gia' gestisce,
+piu' `oaz`/`opz`. Nessuna trasformazione nuova e' stata necessaria oltre
+all'importatore.
+
+**Due export si sovrappongono, e coincidono.** `dati precedente database` e
+`01_02_2023 a 31_12_2023` coprono entrambi feb-nov 2023. Confrontati riga per
+riga su quattro giornate: **zero differenze su ritardi e provvedimenti** sulle
+circa 8.300 corse comuni al giorno. Sono due export dello stesso database, uno
+con il campo `_id` di MongoDB. La precedenza va al primo, il secondo riempie
+novembre e dicembre 2023.
+
+**Una conferma inattesa.** Nei dump storici `ra` e `rp` possono valere la
+stringa `'X'`, e compare **esattamente sui treni con `pr='Soppresso'`** (28 su
+28 nel campione). E' una conferma indipendente, da una sorgente diversa e da
+un'altra epoca, che la correzione descritta in 3.4 e' quella giusta: un treno
+soppresso non ha ritardo zero, non ha alcuna misura.
+
+### 6.3 Cosa e' stato importato, e cosa manca
+
+Importate **684 giornate**, dal 15 febbraio 2022 al 31 dicembre 2023. Silver
+ricostruito in 69 secondi per 23 mesi. Bronze da 842 MB a 1,6 GB.
+
+Il resto e' fermo su un limite esterno: dopo 14 GB MEGA risponde **509 over
+quota** sui download anonimi. Restano 1.016 file, e fra questi i 159 della
+radice che coprono **gennaio-maggio 2024**. La copertura attuale ha quindi un
+buco di cinque mesi fra il 2023 e il giugno 2024, e la serie estesa **non va
+pubblicata prima di averlo colmato**: la dashboard mostrerebbe una
+discontinuita' in mezzo al grafico. La quota anonima si sblocca alcune ore dopo
+il primo download.
+
+Restano inoltre da analizzare, perche' non ancora scaricabili:
+
+- **2020 e 2021** (713 file): stesso formato JSON apparente, da verificare.
+- **`old.zip`**, ottobre 2019 - febbraio 2020: XML, formato diverso da tutti
+  gli altri, richiederebbe un secondo importatore.
+- **`prova`** (99 file): sembra duplicare il 2020, da usare solo per colmare
+  buchi.
