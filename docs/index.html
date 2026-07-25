@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ritardo Treni Italia | Statistiche Puntualit&agrave; Ferroviaria</title>
+  <meta name="description" content="Dashboard interattiva su ritardi, cancellazioni e puntualit&agrave; dei treni in Italia. Dati aggiornati quotidianamente: statistiche per stazione, categoria e tratta. Costo pro capite dei ritardi. A cura di Umberto Bertonelli." />
+  <meta name="author" content="Umberto Bertonelli" />
+  <meta name="keywords" content="ritardo treni, ritardo treni oggi, statistiche treni italia, treni in ritardo, cancellazioni treni, puntualit&agrave; treni, ritardo treni regionali, ritardo trenitalia, dashboard treni, costo ritardi ferroviari" />
+  <link rel="canonical" href="https://www.umbertobertonelli.it/ritardo-treni/" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Ritardo Treni Italia | Statistiche Puntualit&agrave; Ferroviaria" />
+  <meta property="og:description" content="Dashboard interattiva con dati aggiornati ogni giorno su ritardi, cancellazioni e soppressioni dei treni in Italia. Filtra per stazione, categoria, tratta e fascia oraria." />
+  <meta property="og:url" content="https://www.umbertobertonelli.it/ritardo-treni/" />
+  <meta property="og:site_name" content="Umberto Bertonelli" />
+  <meta property="og:locale" content="it_IT" />
+  <!-- og:image: sostituire con uno screenshot 1200x630 della dashboard -->
+  <meta property="og:image" content="https://www.umbertobertonelli.it/ritardo-treni/og-dashboard.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="TrainStats Dashboard - Statistiche ritardi treni Italia" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Ritardo Treni Italia | Statistiche Puntualit&agrave; Ferroviaria" />
+  <meta name="twitter:description" content="Dashboard interattiva su ritardi e puntualit&agrave; dei treni in Italia, aggiornata quotidianamente." />
+  <meta name="twitter:image" content="https://www.umbertobertonelli.it/ritardo-treni/og-dashboard.png" />
+
+  <!-- Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebApplication",
+        "name": "Ritardo Treni Italia \u2013 Dashboard Statistiche",
+        "description": "Dashboard interattiva su ritardi, cancellazioni e puntualit\u00e0 dei treni in Italia. Dati aggiornati quotidianamente con statistiche per stazione, categoria e tratta.",
+        "url": "https://www.umbertobertonelli.it/ritardo-treni/",
+        "applicationCategory": "UtilitiesApplication",
+        "operatingSystem": "Web",
+        "author": {
+          "@type": "Person",
+          "name": "Umberto Bertonelli",
+          "url": "https://www.umbertobertonelli.it/"
+        },
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "EUR"
+        },
+        "inLanguage": "it"
+      },
+      {
+        "@type": "Dataset",
+        "name": "Statistiche ritardi treni Italia",
+        "description": "Dataset con dati giornalieri su ritardi, cancellazioni, soppressioni e puntualit\u00e0 dei treni in Italia, suddivisi per stazione, categoria e tratta.",
+        "url": "https://www.umbertobertonelli.it/ritardo-treni/",
+        "temporalCoverage": "2024/..",
+        "spatialCoverage": {
+          "@type": "Place",
+          "name": "Italia"
+        },
+        "license": "https://opensource.org/licenses/MIT",
+        "creator": {
+          "@type": "Person",
+          "name": "Umberto Bertonelli",
+          "url": "https://www.umbertobertonelli.it/"
+        },
+        "distribution": {
+          "@type": "DataDownload",
+          "encodingFormat": "text/csv",
+          "contentUrl": "https://github.com/DrElegantia/trainstats-dashboard-test"
+        },
+        "variableMeasured": [
+          "Ritardo medio (minuti)",
+          "Percentuale treni in ritardo",
+          "Treni cancellati",
+          "Treni soppressi",
+          "Costo pro capite ritardi"
+        ]
+      }
+    ]
+  }
+  </script>
+
+  <link rel="preconnect" href="https://cdn.plot.ly" crossorigin />
+  <link rel="preconnect" href="https://unpkg.com" crossorigin />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-spinner"></div>
+    <div class="loading-text">Caricamento dati...</div>
+  </div>
+
+  <noscript>
+    <div style="padding:24px;text-align:center;background:#fef3c7;border-bottom:2px solid #f59e0b;">
+      <strong>Questa dashboard richiede JavaScript per funzionare.</strong>
+      <p>Attiva JavaScript nel browser per visualizzare le statistiche interattive sui ritardi dei treni in Italia.</p>
+    </div>
+  </noscript>
+
+  <header class="topbar">
+    <div class="title">
+      <h1>Ritardi Treni Italia &ndash; Statistiche e Puntualit&agrave;</h1>
+      <div class="subtitle">Dashboard interattiva aggiornata giornalmente</div>
+    </div>
+    <div class="meta" id="metaBox"></div>
+  </header>
+
+  <section class="panel filters-panel">
+    <div class="filters-row filters-row--primary">
+      <div class="filter">
+        <label for="yearSel">Anno</label>
+        <select id="yearSel"></select>
+      </div>
+      <div class="filter">
+        <label for="catSel">Categoria</label>
+        <select id="catSel"></select>
+      </div>
+      <div class="filter">
+        <label for="depSel">Stazione partenza</label>
+        <select id="depSel"></select>
+      </div>
+      <div class="filter">
+        <label for="arrSel">Stazione arrivo</label>
+        <select id="arrSel"></select>
+      </div>
+      <div class="filter">
+        <label for="mapMetricSel">Metrica</label>
+        <select id="mapMetricSel">
+          <option value="pct_ritardo">Percentuale in ritardo</option>
+          <option value="in_ritardo">Conteggio in ritardo</option>
+          <option value="corse_osservate">Conteggio corse</option>
+          <option value="minuti_ritardo_tot">Minuti totali ritardo</option>
+          <option value="cancellate">Cancellati</option>
+          <option value="soppresse">Soppressi</option>
+        </select>
+      </div>
+      <div class="filter filter--action">
+        <button id="resetBtn"><span class="reset-icon">&#8635;</span> Reset</button>
+      </div>
+    </div>
+    <div class="filters-divider-toggle" id="filtersToggle">
+      <span class="filters-toggle-label">Filtri avanzati</span>
+      <span class="filters-toggle-arrow">&#9660;</span>
+    </div>
+    <div class="filters-extra-wrap" id="filtersExtraWrap">
+      <div class="filters-row filters-row--extra" id="filtersExtra">
+        <div class="filter filter--month">
+          <label>Intervallo mese</label>
+          <div class="month-range">
+            <select id="monthFrom"></select>
+            <span class="month-sep">&ndash;</span>
+            <select id="monthTo"></select>
+          </div>
+        </div>
+        <div class="filter">
+          <label>Tipo giornata <span class="info-tip" data-tooltip="Infrasettimanale = Lun&ndash;Ven&#10;Fine settimana = Sab&ndash;Dom">&#9432;</span></label>
+          <div id="dayTypeWrap" class="toggle-group"></div>
+        </div>
+        <div class="filter">
+          <label>Fascia oraria <span class="info-tip" data-tooltip="Mattina = 6:00&ndash;8:59&#10;Tarda mattina = 9:00&ndash;13:59&#10;Pomeriggio = 14:00&ndash;17:59&#10;Sera = 18:00&ndash;21:59&#10;Notte = 22:00&ndash;5:59">&#9432;</span></label>
+          <div id="timeSlotWrap" class="toggle-group"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel kpis" data-view="kpi">
+    <div class="kpi">
+      <div class="kpiLabel">Corse osservate</div>
+      <div class="kpiValue" id="kpiTotal"></div>
+    </div>
+    <div class="kpi">
+      <div class="kpiLabel">In ritardo</div>
+      <div class="kpiValue" id="kpiLate"></div>
+    </div>
+    <div class="kpi">
+      <div class="kpiLabel">Minuti totali di ritardo</div>
+      <div class="kpiValue" id="kpiLateMin"></div>
+    </div>
+    <div class="kpi">
+      <div class="kpiLabel">Cancellati</div>
+      <div class="kpiValue" id="kpiCancelled"></div>
+    </div>
+    <div class="kpi">
+      <div class="kpiLabel">Soppressi</div>
+      <div class="kpiValue" id="kpiSuppressed"></div>
+    </div>
+  </section>
+
+  <section class="panel grid2">
+    <div class="card collapsible" data-view="series">
+      <div class="card-header">
+        <h2>Delay Index Mensile</h2>
+        <button class="card-toggle" aria-label="Espandi/Collassa">&#9660;</button>
+      </div>
+      <div class="card-body">
+        <div class="card-desc">Percentuale mensile di treni in ritardo, cancellati o soppressi sul totale delle corse osservate.</div>
+        <div class="filter-badges" id="badgesDelayIndex"></div>
+        <div class="note">(In ritardo + Cancellati + Soppressi) / Corse osservate &times; 100</div>
+        <div id="chartDelayIndex" class="chart"></div>
+      </div>
+    </div>
+    <div class="card collapsible" data-view="series">
+      <div class="card-header">
+        <h2>Serie mensile</h2>
+        <button class="card-toggle" aria-label="Espandi/Collassa">&#9660;</button>
+      </div>
+      <div class="card-body">
+        <div class="card-desc">Andamento mensile del numero di corse suddivise per stato: effettuate, in ritardo, cancellate e soppresse.</div>
+        <div class="filter-badges" id="badgesSeries"></div>
+        <div id="chartMonthly" class="chart"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel grid2">
+    <div class="card collapsible card--collapsed" data-view="hist">
+      <div class="card-header">
+        <h2>Distribuzione ritardo arrivo</h2>
+        <button class="card-toggle" aria-label="Espandi/Collassa">&#9654;</button>
+      </div>
+      <div class="card-body">
+        <div class="card-desc">Distribuzione dei treni per fascia di ritardo all'arrivo (minuti). Mostra quanti treni rientrano in ciascun intervallo.</div>
+        <div class="filter-badges" id="badgesHist"></div>
+        <div id="chartHist" class="chart"></div>
+        <div id="costIndicator" class="cost-indicator" style="display:none;">
+          <span class="cost-label">Costo stimato pro capite dei ritardi (&gt;5 min) <span class="info-tip" data-tooltip="Stima basata sul PIL pro capite italiano&#10;(~&euro;37.000/anno = &euro;0,0704/minuto).&#10;Conta solo i minuti di ritardo&#10;dei treni con ritardo &gt; 5 minuti.">&#9432;</span></span>
+          <span class="cost-value" id="costValue"></span>
+        </div>
+      </div>
+    </div>
+    <div class="card collapsible card--collapsed" data-view="map">
+      <div class="card-header">
+        <h2>Mappa stazioni</h2>
+        <button class="card-toggle" aria-label="Espandi/Collassa">&#9654;</button>
+      </div>
+      <div class="card-body">
+        <div class="card-desc">Visualizzazione geografica delle stazioni. I cerchi indicano il valore della metrica selezionata. I filtri stazione partenza/arrivo non si applicano a questa vista.</div>
+        <div class="filter-badges" id="badgesMap"></div>
+        <div id="map" class="map"></div>
+        <div class="note" id="mapNote"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="card collapsible card--collapsed" data-view="top10">
+      <div class="card-header">
+        <h2>Top 10 Capoluoghi pi&ugrave; problematici</h2>
+        <div class="card-header-controls">
+          <select id="stationsMetricSel" class="card-select">
+            <option value="pct_ritardo">% in ritardo</option>
+            <option value="in_ritardo">Conteggio in ritardo</option>
+            <option value="minuti_ritardo_tot">Minuti ritardo</option>
+            <option value="cancellate_tot">Cancellati</option>
+            <option value="soppresse">Soppressi</option>
+            <option value="corse_osservate">Corse osservate</option>
+          </select>
+          <button class="card-toggle" aria-label="Espandi/Collassa">&#9654;</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="card-desc">Classifica dei 10 capoluoghi con le peggiori prestazioni di puntualit&agrave;. I filtri stazione partenza/arrivo non si applicano a questa vista.</div>
+        <div class="filter-badges" id="badgesTop10"></div>
+        <div id="chartStationsTop10" class="chart chart--tall"></div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="site-footer">
+    Realizzato da <strong>Umberto Bertonelli</strong><br>
+    <a href="https://www.umbertobertonelli.it/" target="_blank" rel="noopener">umbertobertonelli.it</a>
+    &middot;
+    <a href="https://github.com/DrElegantia/trainstats-dashboard-test" target="_blank" rel="noopener">GitHub</a>
+  </footer>
+
+  <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,213 @@
+name: One shot backfill bronze -> gold/docs
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Start date (YYYY-MM-DD). Leave empty to auto-discover from bronze files."
+        required: false
+        type: string
+        default: ""
+      end_date:
+        description: "End date (YYYY-MM-DD). Leave empty to auto-discover from bronze files."
+        required: false
+        type: string
+        default: ""
+      months:
+        description: "Space-separated months (YYYYMM). Leave empty to derive from bronze files."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  pages: write     # needed to deploy to GitHub Pages
+  id-token: write  # needed for OIDC token used by deploy-pages
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy_pages.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Git LFS
+        run: |
+          git lfs install --local
+          git lfs version
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+
+      - name: Fail on unresolved merge markers
+        run: |
+          if grep -rEn "^<<<<<<< |^=======$|^>>>>>>> " --include="*.py" --include="*.yml" --include="*.yaml" .; then
+            echo "Unresolved merge markers found" >&2
+            exit 1
+          fi
+
+      - name: Resolve date range (manual inputs or auto-discover from bronze)
+        id: bronze_range
+        env:
+          INPUT_START: ${{ inputs.start_date }}
+          INPUT_END: ${{ inputs.end_date }}
+          INPUT_MONTHS: ${{ inputs.months }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          input_start = os.environ.get("INPUT_START", "").strip()
+          input_end = os.environ.get("INPUT_END", "").strip()
+          input_months = os.environ.get("INPUT_MONTHS", "").strip()
+
+          if input_start and input_end:
+            # Use manually provided dates
+            start = input_start
+            end = input_end
+            print(f"Using manual date range: {start} -> {end}")
+
+            if input_months:
+              months = input_months.split()
+              print(f"Using manual months: {months}")
+            else:
+              # Derive months from start/end
+              from datetime import date
+              s = date.fromisoformat(start)
+              e = date.fromisoformat(end)
+              months = set()
+              cur = s.replace(day=1)
+              while cur <= e:
+                months.add(cur.strftime("%Y%m"))
+                if cur.month == 12:
+                  cur = cur.replace(year=cur.year + 1, month=1)
+                else:
+                  cur = cur.replace(month=cur.month + 1)
+              months = sorted(months)
+              print(f"Derived months from range: {months}")
+          else:
+            # Auto-discover from bronze files
+            print("No manual dates provided, auto-discovering from bronze files...")
+            metas = sorted(Path("data/bronze").rglob("*.meta.json"))
+            if not metas:
+              raise SystemExit("No bronze meta files found in data/bronze")
+
+            days = []
+            for p in metas:
+              m = re.search(r"(\d{8})\.meta\.json$", p.name)
+              if m:
+                days.append(m.group(1))
+
+            if not days:
+              raise SystemExit("No YYYYMMDD dates found in bronze meta filenames")
+
+            days = sorted(set(days))
+            start = f"{days[0][:4]}-{days[0][4:6]}-{days[0][6:8]}"
+            end = f"{days[-1][:4]}-{days[-1][4:6]}-{days[-1][6:8]}"
+            months = sorted({d[:6] for d in days})
+            print(f"bronze days: {len(days)}")
+
+          print(f"start={start}")
+          print(f"end={end}")
+          print(f"months={' '.join(months)}")
+
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if not github_output:
+            raise SystemExit("GITHUB_OUTPUT is not set")
+
+          with open(github_output, "a", encoding="utf-8") as f:
+            f.write(f"start={start}\n")
+            f.write(f"end={end}\n")
+            f.write(f"months={' '.join(months)}\n")
+          PY
+
+      - name: Build silver from local bronze (full available range)
+        run: |
+          python -m scripts.transform_silver \
+            --start "${{ steps.bronze_range.outputs.start }}" \
+            --end "${{ steps.bronze_range.outputs.end }}"
+
+      - name: Rebuild gold for all bronze months
+        run: |
+          python -m scripts.build_gold --months ${{ steps.bronze_range.outputs.months }}
+
+      - name: Build station dimension + site payload
+        run: |
+          python -m scripts.build_station_dim
+          python -m scripts.build_site
+
+      - name: Verify generated outputs
+        run: |
+          ls -lah data/gold
+          ls -lah docs/data
+
+      - name: Commit and push generated data
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # docs/data/*.csv and manifest.json are gitignored: they are deployed
+          # via GitHub Actions Pages artifact, never committed to git.
+          git add data/gold stations/ || true
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "One-shot backfill bronze to gold/docs"
+
+            # Never use --rebase with LFS-tracked files: git-lfs cannot apply
+            # LFS pointer patches during rebase and always fails with
+            # "Encountered N files that should have been pointers, but weren't".
+            # Use merge -X ours instead: our gold was built by reading the
+            # existing gold first, so it already subsumes the remote's data
+            # (concurrency group guarantees sequential execution).
+            for i in 1 2 3; do
+              if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+                break
+              fi
+              if [ "$i" -eq 3 ]; then
+                echo "Push failed after 3 attempts" >&2
+                exit 1
+              fi
+              echo "Push failed (attempt $i), syncing with remote and retrying..."
+              git fetch origin "${GITHUB_REF_NAME}"
+              git merge -X ours "origin/${GITHUB_REF_NAME}" --no-edit
+              git lfs checkout data/gold/ || true
+              sleep 20
+            done
+          fi
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # Uploads the full docs/ directory (index.html + assets + freshly
+          # generated docs/data/ CSVs). Large CSVs are never committed to git.
+          path: docs/
+
+      - name: Deploy to GitHub Pages
+        id: deploy_pages
+        uses: actions/deploy-pages@v4

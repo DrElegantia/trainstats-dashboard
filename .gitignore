@@ -1,0 +1,43 @@
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+.DS_Store
+
+# silver intermedi, mai versionati
+data/silver/
+data/silver_trains/
+
+# eventuali database locali
+*.duckdb
+
+# gold parquet non necessari
+data/gold/**/*.parquet
+
+# bronze: ignoriamo solo csv non compressi
+data/bronze/**/*.csv
+
+# ma tracciamo sempre questi
+!data/bronze/**/*.csv.gz
+!data/bronze/**/*.json
+
+# Heavy gold daily files (150–250 MB each) are never committed to git.
+# They exceed GitHub LFS free bandwidth (1 GB/month) when downloaded on every
+# CI run. They are rebuilt from silver in CI and uploaded directly to Pages.
+data/gold/od_giorno_categoria.csv
+data/gold/stazioni_giorno_categoria_ruolo.csv
+data/gold/stazioni_giorno_categoria_nodo.csv
+data/gold/hist_stazioni_giorno_categoria_ruolo.csv
+data/gold/hist_giorno_categoria.csv
+
+# GitHub Pages pubblica da docs
+site/
+
+# docs/data CSV files are never committed to git — they are deployed directly
+# via GitHub Actions Pages artifact (upload-pages-artifact). Committing them
+# would hit GitHub's 100 MB per-file limit as the dataset grows, and storing
+# them in LFS breaks GitHub Pages serving (Pages only serves LFS pointer files).
+docs/data/*.csv
+docs/data/manifest.json
+
+!.gitkeep

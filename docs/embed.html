@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="description" content="Dashboard embeddabile sulle statistiche di ritardo dei treni in Italia. Versione compatta per integrazione iframe." />
+  <title>Ritardo Treni Italia | Dashboard Embed</title>
+  <link rel="canonical" href="https://www.umbertobertonelli.it/ritardo-treni/" />
+  <link rel="preconnect" href="https://cdn.plot.ly" crossorigin />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body class="embed-mode">
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-spinner"></div>
+    <div class="loading-text">Caricamento dati...</div>
+  </div>
+
+  <header class="topbar">
+    <div class="title">
+      <h1>TrainStats Dashboard</h1>
+    </div>
+    <a class="embed-fullscreen-link" href="https://drelegantia.github.io/trainstats-dashboard-test/" target="_blank" rel="noopener">Apri completa &#8599;</a>
+  </header>
+
+  <section class="panel filters-panel">
+    <div class="filters-row filters-row--primary">
+      <div class="filter">
+        <label for="yearSel">Anno</label>
+        <select id="yearSel"></select>
+      </div>
+      <div class="filter">
+        <label for="catSel">Categoria</label>
+        <select id="catSel"></select>
+      </div>
+      <div class="filter">
+        <label for="depSel">Stazione partenza</label>
+        <select id="depSel"></select>
+      </div>
+      <div class="filter">
+        <label for="arrSel">Stazione arrivo</label>
+        <select id="arrSel"></select>
+      </div>
+      <div class="filter filter--action">
+        <button id="resetBtn"><span class="reset-icon">&#8635;</span> Reset</button>
+      </div>
+    </div>
+    <div class="filters-divider-toggle collapsed" id="filtersToggle">
+      <span class="filters-toggle-label">Filtri avanzati</span>
+      <span class="filters-toggle-arrow">&#9660;</span>
+    </div>
+    <div class="filters-extra-wrap collapsed" id="filtersExtraWrap">
+      <div class="filters-row filters-row--extra" id="filtersExtra">
+        <div class="filter filter--month">
+          <label>Intervallo mese</label>
+          <div class="month-range">
+            <select id="monthFrom"></select>
+            <span class="month-sep">&ndash;</span>
+            <select id="monthTo"></select>
+          </div>
+        </div>
+        <div class="filter">
+          <label>Tipo giornata <span class="info-tip" data-tooltip="Infrasettimanale = Lun&ndash;Ven&#10;Fine settimana = Sab&ndash;Dom">&#9432;</span></label>
+          <div id="dayTypeWrap" class="toggle-group"></div>
+        </div>
+        <div class="filter">
+          <label>Fascia oraria <span class="info-tip" data-tooltip="Mattina = 6:00&ndash;8:59&#10;Tarda mattina = 9:00&ndash;13:59&#10;Pomeriggio = 14:00&ndash;17:59&#10;Sera = 18:00&ndash;21:59&#10;Notte = 22:00&ndash;5:59">&#9432;</span></label>
+          <div id="timeSlotWrap" class="toggle-group"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Metrica mappa nascosta ma presente per app.js -->
+    <select id="mapMetricSel" style="display:none">
+      <option value="pct_ritardo">Percentuale in ritardo</option>
+      <option value="in_ritardo">Conteggio in ritardo</option>
+      <option value="corse_osservate">Conteggio corse</option>
+      <option value="minuti_ritardo_tot">Minuti totali ritardo</option>
+      <option value="cancellate">Cancellati</option>
+      <option value="soppresse">Soppressi</option>
+    </select>
+  </section>
+
+  <section class="panel kpis" data-view="kpi">
+    <div class="kpi">
+      <div class="kpiLabel">Corse osservate</div>
+      <div class="kpiValue" id="kpiTotal"></div>
+    </div>
+    <div class="kpi">
+      <div class="kpiLabel">In ritardo</div>
+      <div class="kpiValue" id="kpiLate"></div>
+    </div>
+    <div class="kpi">
+      <div class="kpiLabel">Minuti ritardo</div>
+      <div class="kpiValue" id="kpiLateMin"></div>
+    </div>
+    <div class="kpi">
+      <div class="kpiLabel">Cancellati</div>
+      <div class="kpiValue" id="kpiCancelled"></div>
+    </div>
+    <div class="kpi">
+      <div class="kpiLabel">Soppressi</div>
+      <div class="kpiValue" id="kpiSuppressed"></div>
+    </div>
+  </section>
+
+  <section class="panel grid2">
+    <div class="card collapsible" data-view="series">
+      <div class="card-header">
+        <h2>Delay Index Mensile</h2>
+        <button class="card-toggle" aria-label="Espandi/Collassa">&#9660;</button>
+      </div>
+      <div class="card-body">
+        <div class="card-desc">Percentuale mensile di treni in ritardo, cancellati o soppressi sul totale.</div>
+        <div class="filter-badges" id="badgesDelayIndex"></div>
+        <div id="chartDelayIndex" class="chart"></div>
+      </div>
+    </div>
+    <div class="card collapsible" data-view="series">
+      <div class="card-header">
+        <h2>Serie mensile</h2>
+        <button class="card-toggle" aria-label="Espandi/Collassa">&#9660;</button>
+      </div>
+      <div class="card-body">
+        <div class="card-desc">Andamento mensile delle corse per stato.</div>
+        <div class="filter-badges" id="badgesSeries"></div>
+        <div id="chartMonthly" class="chart"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel grid2">
+    <div class="card collapsible card--collapsed" data-view="hist">
+      <div class="card-header">
+        <h2>Distribuzione ritardo</h2>
+        <button class="card-toggle" aria-label="Espandi/Collassa">&#9654;</button>
+      </div>
+      <div class="card-body">
+        <div class="filter-badges" id="badgesHist"></div>
+        <div id="chartHist" class="chart"></div>
+        <div id="costIndicator" class="cost-indicator" style="display:none;">
+          <span class="cost-label">Costo stimato pro capite dei ritardi (&gt;5 min) <span class="info-tip" data-tooltip="Stima basata sul PIL pro capite italiano&#10;(~&euro;37.000/anno = &euro;0,0704/minuto).&#10;Conta solo i minuti di ritardo&#10;dei treni con ritardo &gt; 5 minuti.">&#9432;</span></span>
+          <span class="cost-value" id="costValue"></span>
+        </div>
+      </div>
+    </div>
+    <div class="card collapsible card--collapsed" data-view="top10">
+      <div class="card-header">
+        <h2>Top 10 Capoluoghi</h2>
+        <div class="card-header-controls">
+          <select id="stationsMetricSel" class="card-select">
+            <option value="pct_ritardo">% in ritardo</option>
+            <option value="in_ritardo">In ritardo</option>
+            <option value="minuti_ritardo_tot">Min. ritardo</option>
+            <option value="cancellate_tot">Cancellati</option>
+            <option value="soppresse">Soppressi</option>
+            <option value="corse_osservate">Corse</option>
+          </select>
+          <button class="card-toggle" aria-label="Espandi/Collassa">&#9654;</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="filter-badges" id="badgesTop10"></div>
+        <div id="chartStationsTop10" class="chart chart--tall"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Map and mapNote hidden but present for app.js compatibility -->
+  <div id="map" style="display:none"></div>
+  <div id="mapNote" style="display:none"></div>
+  <div id="badgesMap" style="display:none"></div>
+
+  <footer class="site-footer" style="opacity:0.4; padding: 8px 10px 12px;">
+    <a href="https://www.umbertobertonelli.it/" target="_blank" rel="noopener">umbertobertonelli.it</a>
+    &middot;
+    <a href="https://github.com/DrElegantia/trainstats-dashboard-test" target="_blank" rel="noopener">GitHub</a>
+  </footer>
+
+  <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="assets/app.js"></script>
+  <script>
+  /* ── Override "Apri completa" link if parentUrl is provided ── */
+  (function () {
+    var params = new URLSearchParams(window.location.search);
+    var parentUrl = params.get('parentUrl');
+    if (parentUrl) {
+      var link = document.querySelector('.embed-fullscreen-link');
+      if (link) link.href = parentUrl;
+    }
+  })();
+
+  /* ── Notify parent frame of content height for seamless embedding ── */
+  (function () {
+    var PARENT_ORIGIN = 'https://www.umbertobertonelli.it';
+    function notifyHeight() {
+      if (window.parent === window) return;
+      window.parent.postMessage(
+        { type: 'resize', height: document.documentElement.scrollHeight },
+        PARENT_ORIGIN
+      );
+    }
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(notifyHeight).observe(document.body);
+    }
+    window.addEventListener('load', notifyHeight);
+    notifyHeight();
+  })();
+  </script>
+</body>
+</html>

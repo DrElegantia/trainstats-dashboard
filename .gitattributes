@@ -1,0 +1,9 @@
+# Gold CSV files: stored as regular git objects (NOT LFS).
+#
+# Using LFS for gold files exhausts GitHub Free's 1 GB/month LFS bandwidth
+# quota when each CI run downloads all historical gold objects on checkout.
+# The light gold files are small enough for regular git (total ~16 MB growing
+# slowly); the heavy daily files are gitignored and never committed at all.
+#
+# NOTE: docs/data/*.csv must NOT be in LFS — GitHub Pages cannot serve LFS
+# objects; it would serve the pointer file instead of the actual CSV data.

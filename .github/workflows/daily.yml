@@ -1,0 +1,169 @@
+# .github/workflows/daily.yml
+name: TrainStats Daily Pipeline
+
+on:
+  schedule:
+    - cron: "30 2 * * *"
+
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Start date YYYY-MM-DD"
+        required: false
+        type: string
+      end_date:
+        description: "End date YYYY-MM-DD"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pages: write     # needed to deploy to GitHub Pages
+  id-token: write  # needed for OIDC token used by deploy-pages
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy_pages.outputs.page_url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+
+      - name: Fail on unresolved merge markers
+        run: |
+          if grep -rEn "^<<<<<<< |^=======$|^>>>>>>> " --include="*.py" --include="*.yml" --include="*.yaml" .; then
+            echo "Unresolved merge markers found" >&2
+            exit 1
+          fi
+
+      - name: Run pipeline
+        env:
+          START_DATE: ${{ inputs.start_date }}
+          END_DATE: ${{ inputs.end_date }}
+        run: |
+          set -euo pipefail
+
+          normalize_date() {
+            local raw="$1"
+            python -c "from scripts.utils import parse_cli_date; import sys; print(parse_cli_date(sys.argv[1], 'workflow date').isoformat())" "$raw"
+          }
+
+          if [ -n "${START_DATE:-}" ] && [ -z "${END_DATE:-}" ]; then
+            END_DATE="$START_DATE"
+          fi
+
+          if [ -n "${START_DATE:-}" ]; then
+            START_DATE="$(normalize_date "$START_DATE")"
+            END_DATE="$(normalize_date "$END_DATE")"
+            echo "Running backfill from $START_DATE to $END_DATE"
+            python -m scripts.run_pipeline --start "$START_DATE" --end "$END_DATE"
+          else
+            echo "Running daily pipeline"
+            python -m scripts.run_pipeline
+          fi
+
+      - name: Verify output files
+        run: |
+          echo "=== Checking data/gold ==="
+          ls -lah data/gold/ || echo "data/gold not found"
+          
+          echo "=== Checking stations cache ==="
+          ls -lah stations/stations.csv || echo "stations/stations.csv not found (first run)"
+          
+          echo "=== stations_dim.csv preview ==="
+          head -20 data/gold/stations_dim.csv || true
+          
+          echo "=== Stations with coordinates ==="
+          python -c "
+          import pandas as pd
+          df = pd.read_csv('data/gold/stations_dim.csv')
+          total = len(df)
+          with_coords = df['lat'].notna().sum()
+          print(f'Total: {total}, With coords: {with_coords}, Missing: {total - with_coords}')
+          " || true
+
+      - name: Update stations unknown list (optional)
+        run: |
+          python -m scripts.update_stations || true
+
+      - name: Commit generated data and docs
+        env:
+          BRANCH_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+
+          # docs/data/*.csv and manifest.json are gitignored: they are deployed
+          # via GitHub Actions Pages artifact, never committed to git.
+          git add data/ stations/ || true
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Automated daily data update"
+
+            # Never use --rebase with LFS-tracked files: git-lfs cannot apply
+            # LFS pointer patches during rebase and always fails with
+            # "Encountered N files that should have been pointers, but weren't".
+            # Use merge -X ours instead: our gold was built by reading the
+            # existing gold first, so it already subsumes the remote's data
+            # (concurrency group guarantees sequential execution).
+            for i in 1 2 3; do
+              if git push origin "HEAD:$BRANCH_NAME"; then
+                break
+              fi
+              if [ "$i" -eq 3 ]; then
+                echo "Push failed after 3 attempts" >&2
+                exit 1
+              fi
+              echo "Push failed (attempt $i), syncing with remote and retrying..."
+              git fetch origin "$BRANCH_NAME"
+              git merge -X ours "origin/$BRANCH_NAME" --no-edit
+              git lfs checkout data/gold/ || true
+              sleep 20
+            done
+          fi
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # Uploads the full docs/ directory (index.html + assets + freshly
+          # generated docs/data/ CSVs). Large CSVs are never committed to git.
+          path: docs/
+
+      - name: Deploy to GitHub Pages
+        id: deploy_pages
+        uses: actions/deploy-pages@v4

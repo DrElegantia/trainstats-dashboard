@@ -1,0 +1,69 @@
+project:
+  timezone: Europe/Rome
+  source_base_url: "https://trainstats.altervista.org/exportcsvint.php"
+  source_type: "treni"
+  fields: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20"
+
+http:
+  timeout_seconds: 30
+  max_retries: 5
+  backoff_factor_seconds: 2
+
+quality:
+  max_datetime_parse_failure_rate: 0.01
+  max_missing_key_rate: 0.005
+
+punctuality:
+  on_time_threshold_minutes: 4
+
+delay_buckets_minutes:
+  edges: [-9999, -60, -30, -15, -10, -5, -1, 0, 1, 5, 10, 15, 30, 60, 120, 9999]
+  labels:
+    - "<= -60"
+    - "(-60,-30]"
+    - "(-30,-15]"
+    - "(-15,-10]"
+    - "(-10,-5]"
+    - "(-5,-1]"
+    - "(-1,0]"
+    - "(0,1]"
+    - "(1,5]"
+    - "(5,10]"
+    - "(10,15]"
+    - "(15,30]"
+    - "(30,60]"
+    - "(60,120]"
+    - "> 120"
+
+status_rules:
+  text_fields:
+    - "Provvedimenti"
+    - "Variazioni"
+    - "Cambi numerazione"
+    - "Nome stazione partenza 0"
+    - "Nome stazione arrivo 0"
+    - "Stazione estera partenza"
+    - "Stazione estera arrivo"
+  patterns:
+    cancelled:
+      any:
+        - "(?i)\\bcancellat"
+        - "(?i)\\bannullat"
+        - "(?i)\\bnon\\s*effettuat"
+    suppressed:
+      any:
+        - "(?i)\\bsoppress"
+        - "(?i)\\bsoppres"
+    partial_cancelled:
+      any:
+        - "(?i)\\bparzial"
+        - "(?i)\\blimitat"
+        - "(?i)\\binterrott"
+        - "(?i)\\bprosegue\\s+da\\b"
+        - "(?i)\\bdevia"
+    performed:
+      default: true
+
+min_counts:
+  leaderboard_min_trains: 30
+

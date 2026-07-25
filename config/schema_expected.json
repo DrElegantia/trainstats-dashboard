@@ -1,0 +1,39 @@
+{
+  "mode": "strict",
+  "expected_header": [
+    "Categoria",
+    "Numero treno",
+    "Codice stazione partenza",
+    "Nome stazione partenza",
+    "Ora partenza programmata",
+    "Ritardo partenza",
+    "Codice stazione arrivo",
+    "Nome stazione arrivo",
+    "Ora arrivo programmata",
+    "Ritardo arrivo",
+    "Codice stazione partenza 0",
+    "Nome stazione partenza 0",
+    "Codice stazione arrivo 0",
+    "Nome stazione arrivo 0",
+    "Cambi numerazione",
+    "Provvedimenti",
+    "Variazioni",
+    "Stazione estera partenza",
+    "Orario estero partenza",
+    "Stazione estera arrivo",
+    "Orario estero arrivo"
+  ],
+  "required_columns": [
+    "Categoria",
+    "Numero treno",
+    "Codice stazione partenza",
+    "Nome stazione partenza",
+    "Ora partenza programmata",
+    "Ritardo partenza",
+    "Codice stazione arrivo",
+    "Nome stazione arrivo",
+    "Ora arrivo programmata",
+    "Ritardo arrivo"
+  ]
+}
+
