@@ -1,0 +1,7 @@
+{
+  "reference_date": "2025-12-22",
+  "extracted_at_utc": "2026-02-14T16:02:30Z",
+  "source_url": "manual_from_zip:dati_2025_12_22.zip inner:dati_2025_12_22.json",
+  "bytes": 1904997,
+  "header": "giorno,timeZone,riassunto,avvisiRFI,avvisiTI,treni"
+}
