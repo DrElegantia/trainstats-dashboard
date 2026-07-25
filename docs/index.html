@@ -222,11 +222,11 @@
   <section class="panel grid2">
     <div class="card collapsible card--collapsed" data-view="hist">
       <div class="card-header">
-        <h2>Distribuzione ritardo arrivo</h2>
+        <h2>Distribuzione dello scostamento all'arrivo</h2>
         <button class="card-toggle" aria-label="Espandi/Collassa">&#9654;</button>
       </div>
       <div class="card-body">
-        <div class="card-desc">Distribuzione dei treni per fascia di ritardo all'arrivo (minuti). Mostra quanti treni rientrano in ciascun intervallo.</div>
+        <div class="card-desc">Distribuzione dei treni per scostamento dall'orario all'arrivo (minuti). I valori negativi sono arrivi in anticipo, non ritardi negativi: nella quasi totalità dei casi valgono pochi minuti, il margine di recupero previsto dall'orario. Oltre 15 minuti di anticipo si colloca lo 0,12% delle corse misurate.</div>
         <div class="filter-badges" id="badgesHist"></div>
         <div id="chartHist" class="chart"></div>
         <div id="costIndicator" class="cost-indicator" style="display:none;">
