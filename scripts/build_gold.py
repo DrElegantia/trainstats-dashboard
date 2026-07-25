@@ -377,18 +377,33 @@ def build_metrics(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
 
     df = _riconcilia_data_programmata(df)
 
-    df["mese"] = to_month_key(df["dt_partenza_prog"])
-    df["anno"] = df["dt_partenza_prog"].dt.year.astype("Int64")
+    # Base temporale su cui poggiano mese, anno e tipo di giornata.
+    #
+    # Di norma e' la partenza programmata, ma i dump del 2020 contengono 398
+    # corse che non ne hanno una: quasi tutte soppressioni, che la sorgente
+    # pubblica con gli orari azzerati, piu' qualche corsa effettuata di cui
+    # resta il solo orario di arrivo. Senza ripiego quelle righe restavano con
+    # mese nullo, e il groupby le scartava: sparivano dal gold esattamente come
+    # le date incoerenti di 3.11. Si ripiega sull'arrivo programmato e infine
+    # sul giorno di rilevazione, che c'e' sempre.
+    base = df["dt_partenza_prog"].fillna(df["dt_arrivo_prog"])
+    if "data_riferimento" in df.columns:
+        base = base.fillna(pd.to_datetime(df["data_riferimento"], errors="coerce"))
+
+    df["mese"] = to_month_key(base)
+    df["anno"] = base.dt.year.astype("Int64")
 
     # tipo_giorno: infrasettimanale (Mon-Fri) vs weekend (Sat-Sun).
     # Both of these ran a Python lambda per row over millions of rows; the
     # boolean mask and the bucketing below do the same work in numpy.
-    dow = df["dt_partenza_prog"].dt.dayofweek  # 0=Mon, 6=Sun
+    dow = base.dt.dayofweek  # 0=Mon, 6=Sun
     df["tipo_giorno"] = np.where(dow.ge(5).fillna(False), "weekend", "infrasettimanale")
 
-    # fascia_oraria: time-of-day slot. Rows with no departure timestamp keep
-    # falling back to "mattina", as before.
-    hour = df["dt_partenza_prog"].dt.hour
+    # fascia_oraria: time-of-day slot. Qui il ripiego si ferma agli orari veri:
+    # il giorno di rilevazione non porta un'ora, e mezzanotte finirebbe per
+    # dichiarare "notte" corse di cui non sappiamo nulla. Restano su "mattina"
+    # come prima.
+    hour = df["dt_partenza_prog"].fillna(df["dt_arrivo_prog"]).dt.hour
     fascia = pd.cut(
         hour,
         bins=[-1, 5, 8, 13, 17, 21, 23],
@@ -566,7 +581,16 @@ def _station_source(df: pd.DataFrame) -> pd.DataFrame:
     arr["nome_stazione"] = arr["nome_arrivo"]
     arr["ruolo"] = "arrivo"
 
-    return pd.concat([dep, arr], ignore_index=True, copy=False)
+    fuori = pd.concat([dep, arr], ignore_index=True, copy=False)
+
+    # I dump XML del 2019 pubblicano le soppressioni senza la stazione di
+    # partenza: 342 corse su 16,5 milioni restano con un capo ignoto. Senza
+    # questo filtro finiscono in una stazione dal codice vuoto, che compare
+    # nell'elenco della dashboard come una voce senza nome. Si scarta il solo
+    # capo ignoto, non la corsa: l'altro estremo continua a contarla, e i
+    # totali di kpi_* non sono toccati perche' non passano di qui.
+    codice = fuori["cod_stazione"].astype(str).str.strip()
+    return fuori[codice.ne("") & ~codice.str.lower().isin(["nan", "none", "null"])].copy()
 
 
 def _attach_station_names(out: pd.DataFrame, src: pd.DataFrame) -> pd.DataFrame:
