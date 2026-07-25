@@ -648,3 +648,25 @@ Restano inoltre da analizzare, perche' non ancora scaricabili:
   gli altri, richiederebbe un secondo importatore.
 - **`prova`** (99 file): sembra duplicare il 2020, da usare solo per colmare
   buchi.
+
+### 6.4 Aggiungere lo storico non muove il periodo gia' pubblicato
+
+Il rischio da escludere era che unificare le stazioni su 4,5 anni cambiasse
+retroattivamente i numeri dei due anni gia' online. Confronto fra il gold
+committato e quello ricostruito con lo storico, limitato ai 26 mesi comuni:
+
+| | pubblicato | con lo storico |
+|---|---|---|
+| corse, `kpi_mese` | 6.231.961 | 6.231.961 |
+| corse, vista stazioni | 12.463.922 | 12.463.922 |
+| stazioni distinte | 1.731 | 1.731 |
+| mesi con `ritardo_medio` diverso | 0 su 26 | |
+| righe comuni con conteggio diverso | 0 su 22.326 | |
+
+Cambia solo l'etichetta di **42 stazioni**, e solo fra codici non ufficiali:
+prima portavano un hash `N_<sha1 del nome>`, ora il codice che la sorgente
+fornisce per la rete suburbana lombarda (`N00006` Bollate Centro, `N00010`
+Cesate, `N00019` Tradate). Nessuna stazione perde un codice ufficiale `S`, e la
+copertura della mappa resta invariata (97,95% contro 97,96%). Le stazioni
+storiche e quelle odierne finiscono nella stessa identita': Milano Centrale e'
+`S01700` su tutti i 49 mesi, con zero nomi associati a piu' di un codice.
