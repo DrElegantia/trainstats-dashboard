@@ -26,6 +26,21 @@ delay_validity:
   min_minutes: -90
   max_minutes: 1440
 
+  # Alcuni treni hanno nella sorgente un orario di ARRIVO sbagliato in modo
+  # sistematico: partono puntuali e risultano ogni giorno in anticipo dello
+  # stesso scarto. Esempio reale, treno 4329 Foggia -> Bari Centrale, durata
+  # programmata sempre 109 minuti: parte +2 e arriva -18, -18, -19, -18, -17
+  # su dieci giorni su quindici. Recuperare venti minuti su centonove non e'
+  # possibile: e' l'orario di riferimento a essere spostato.
+  #
+  # Il caso si riconosce solo guardando la mediana del singolo treno sulla
+  # singola tratta, perche' lo scarto e' costante e quindi invisibile a un
+  # confronto della corsa con le altre corse dello stesso treno.
+  # Sono 19 treni su 9.221 e lo 0,20% delle corse: le misure di questi treni
+  # vengono scartate, non corrette, perche' non sappiamo quale sia l'orario giusto.
+  systematic_early_median_minutes: -10
+  min_runs_for_reference: 5
+
 # A train that never ran still carries ritardo=0 in the feed. Counting that
 # zero as a punctual arrival inflated punctuality and dragged the average
 # delay down, so delay statistics are computed only over these states.

@@ -319,7 +319,83 @@ Nella stessa misura emerge il §4.2 a colpo d'occhio: il KPI "corse osservate"
 della dashboard in produzione riporta **6.391.517**, quello della nuova
 **6.231.699**. Il totale in home era gonfiato di 159.818 corse.
 
-### 4.5 Bug della dashboard trovato durante la verifica
+### 4.5 Perche' l'istogramma mostrava anticipi di 30 minuti su Milano-Verona
+
+Segnalazione: sulla distribuzione compaiono anticipi di 30 minuti, e su alcune
+tratte non sono marginali.
+
+L'istogramma e i KPI stavano descrivendo **popolazioni diverse**:
+
+| | corse |
+|---|---|
+| KPI (Milano Centrale -> Verona P.N., REG, infrasettimanale, sera) | 2.117 |
+| istogramma, stessa selezione | 12.102 |
+
+L'istogramma per stazione (`hist_stazioni_*`) e' indicizzato per stazione e
+ruolo, non per coppia origine-destinazione. Con entrambi gli estremi
+selezionati puo' filtrare solo su uno dei due e sceglie l'arrivo: disegnava
+quindi tutti gli arrivi a Verona P.N. da qualunque origine, pur mostrando
+attivo anche il badge della partenza.
+
+Su Milano Centrale -> Verona P.N. il dato reale e' un minimo di **-8 minuti** e
+**zero** corse con anticipo di 15 minuti o piu'. Gli anticipi visibili venivano
+da altre origini:
+
+| origine dell'arrivo a Verona P.N. | corse con anticipo >= 15 min |
+|---|---|
+| VENEZIA S.LUCIA | 232 |
+| BOLZANO | 29 |
+| altre | 8 |
+| **totale** | **269 su 19.058 (1,4%)** |
+
+Il meccanismo su Venezia -> Verona e' misurabile: le corse che risultano molto
+in anticipo hanno **durata programmata mediana di 142 minuti**, contro gli
+**88 minuti** delle corse normali sulla stessa tratta. La sorgente le orarizza
+su un itinerario piu' lungo di quello effettivamente percorso, quindi l'arrivo
+cade ~50 minuti prima dell'orario registrato. E' un difetto della sorgente, non
+un treno veloce, e non incide su `ritardo_medio` (che ha il floor a zero) ma
+popola i bucket negativi della distribuzione.
+
+Corretto: il badge della partenza viene marcato come non applicabile
+all'istogramma e sopra al grafico compare l'ambito reale con il numero di corse
+su cui e' calcolato.
+
+### 4.6 Stazioni spezzate in due dalle varianti del nome
+
+Emerso guardando le origini degli arrivi a Verona: `VENEZIA S.LUCIA` e
+`VENEZIA SANTA LUCIA` venivano contate come due stazioni distinte, cosi' come
+`BOLOGNA C.LE` e `BOLOGNA CENTRALE`.
+
+`normalize_station_name` gestiva solo le convenzioni Trenord (`M N`, `FNM`,
+`NORD`) e non le abbreviazioni ferroviarie. Una tabella di espansione esisteva
+in `build_station_dim.py`, ma non veniva usata dal raggruppamento dei codici.
+
+| causa | stazioni | corse coinvolte |
+|---|---|---|
+| varianti del nome non unificate | 40 gruppi | **810.418 (6,50%)** |
+| codici `N_`/`S` della stessa stazione non uniti | 363 | 86.275 (0,69%) |
+
+I casi piu' grossi: Firenze S.M.N. (272.390 corse divise in due), Bologna
+Centrale (253.175), Como San Giovanni (88.758).
+
+Il secondo caso aveva una causa distinta: la mappa dei codici canonici veniva
+ricostruita **a ogni chunk di tre mesi**, sui soli mesi in lavorazione. Un
+codice sintetico usato solo nel 2024 e il codice ufficiale della stessa
+stazione usato solo nel 2026 non finivano mai nello stesso gruppo. Ora la mappa
+si costruisce una volta sull'intero storico.
+
+Le abbreviazioni ora espanse: `C.LE`/`CENT.` -> CENTRALE, `S.M.N.` ->
+S MARIA NOVELLA, `P.TA` -> PORTA, `P.NUOVA` -> PORTA NUOVA, `AER.` ->
+AEROPORTO, `SCR.` -> SCRIVIA, `M.MO` -> MARITTIMO, oltre a trattini e punti
+come separatori. Tutte le forme di San/Santa/Santo/Santi collassano su un
+unico token, perche' da `S.` non e' deducibile quale valga.
+
+Verificato su 18 coppie note (18 unificate) e su 7 coppie di stazioni
+realmente diverse (nessuna falsa unione). La versione JavaScript, che deve
+raggruppare le tendine allo stesso modo, e' stata confrontata con quella Python
+su tutti i 1.777 nomi presenti: zero divergenze.
+
+### 4.7 Bug dei filtri di dettaglio
 
 Segnalazione: con Milano -> Verona, REG, infrasettimanale, sera tutti gli
 indicatori vanno a zero. Riprodotto sulla dashboard in produzione.

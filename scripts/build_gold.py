@@ -96,6 +96,55 @@ def _build_station_code_map(df: Optional[pd.DataFrame] = None) -> Dict[str, str]
     return code_map
 
 
+# Rappresentazioni testuali del "valore assente" prodotte da astype(str) su
+# colonne object: vanno collassate, altrimenti diventano gruppi distinti.
+_NULL_LABELS = {"", "none", "nan", "nat", "null", "<na>"}
+
+
+def _clean_label(values: pd.Series) -> pd.Series:
+    s = values.astype(str).str.strip()
+    return s.where(~s.str.lower().isin(_NULL_LABELS), "")
+
+
+def collect_silver_code_names() -> pd.DataFrame:
+    """Coppie distinte codice/nome stazione su TUTTO lo storico silver.
+
+    La mappa dei codici canonici veniva costruita chunk per chunk, sui soli mesi
+    in lavorazione. Un codice sintetico `N_` usato solo nel 2024 e il codice
+    ufficiale `S` della stessa stazione usato solo nel 2026 non finivano mai nel
+    medesimo gruppo, quindi non venivano uniti: 363 stazioni restavano spezzate
+    in due, per 86.275 corse. Serve una vista sull'intero storico.
+    """
+    rows: List[pd.DataFrame] = []
+    for path in list_silver_month_files():
+        for code_col, name_col in (("cod_partenza", "nome_partenza"), ("cod_arrivo", "nome_arrivo")):
+            try:
+                part = pd.read_parquet(path, columns=[code_col, name_col])
+            except Exception:
+                continue
+            part.columns = ["cod", "nome"]
+            rows.append(part.dropna(subset=["cod"]).drop_duplicates(subset=["cod"]))
+
+    if not rows:
+        return pd.DataFrame(columns=["cod", "nome"])
+
+    out = pd.concat(rows, ignore_index=True)
+    out["cod"] = out["cod"].astype(str).str.strip()
+    out["nome"] = out["nome"].astype(str).str.strip()
+    return out[out["cod"].ne("")].drop_duplicates(subset=["cod"])
+
+
+def seed_station_code_map_from_history() -> Dict[str, str]:
+    """Costruisce la mappa dei codici una volta sola, da tutto lo storico."""
+    global _station_code_map_cache
+    _station_code_map_cache = None
+    pairs = collect_silver_code_names()
+    df = pairs.rename(columns={"cod": "cod_partenza", "nome": "nome_partenza"})
+    df["cod_arrivo"] = df["cod_partenza"]
+    df["nome_arrivo"] = df["nome_partenza"]
+    return _build_station_code_map(df)
+
+
 def _apply_code_map(df: pd.DataFrame, code_map: Dict[str, str]) -> pd.DataFrame:
     """Replace station codes in the dataframe using the canonical mapping."""
     if not code_map:
@@ -269,7 +318,11 @@ def build_metrics(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise KeyError(f"silver schema mismatch. missing={missing}. available={list(df.columns)}")
 
-    df["categoria"] = df["categoria"].astype(str).str.strip()
+    # astype(str) su una colonna object trasforma None in "None" e NaN in
+    # "nan": la categoria mancante finiva cosi' in tre gruppi distinti ("",
+    # "None", "nan") che la dashboard mostrava come categorie separate. Qui
+    # collassano tutti in stringa vuota.
+    df["categoria"] = _clean_label(df["categoria"])
     df["num_treno"] = df["numero_treno"].astype(str).str.strip()
 
     df["cod_partenza"] = df["cod_partenza"].astype(str).str.strip()
@@ -331,6 +384,26 @@ def build_metrics(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     in_range = df["ritardo_arrivo_min"].between(lo, hi)
 
     valid = df["ritardo_arrivo_min"].notna() & ran & in_range
+
+    # Treni con orario di arrivo sistematicamente sbagliato nella sorgente:
+    # partono puntuali e arrivano ogni giorno in anticipo dello stesso scarto.
+    # Si riconoscono dalla mediana del singolo treno sulla singola tratta.
+    sys_thr = validity.get("systematic_early_median_minutes")
+    min_runs = int(validity.get("min_runs_for_reference", 5))
+    df["orario_arrivo_sospetto"] = 0
+    if sys_thr is not None and {"numero_treno", "cod_partenza", "cod_arrivo"} <= set(df.columns):
+        key = ["numero_treno", "cod_partenza", "cod_arrivo"]
+        dev_for_ref = df["ritardo_arrivo_min"].where(valid)
+        grp = dev_for_ref.groupby([df[c] for c in key])
+        med = grp.transform("median")
+        runs = grp.transform("count")
+        suspect = (runs >= min_runs) & (med <= float(sys_thr))
+        df["orario_arrivo_sospetto"] = suspect.fillna(False).astype("int8")
+        valid = valid & ~suspect.fillna(False)
+        n_susp = int(df["orario_arrivo_sospetto"].sum())
+        if n_susp:
+            print(f"  scartate {n_susp} misure di treni con orario di arrivo sistematicamente anticipato")
+
     df["delay_valido"] = valid.astype("int8")
 
     # Signed deviation from timetable, defined only where usable.
@@ -616,7 +689,7 @@ def migrate_csv_to_partitions(name: str) -> bool:
     return True
 
 
-def save_gold_tables(tables: Dict[str, pd.DataFrame]) -> None:
+def save_gold_tables(tables: Dict[str, pd.DataFrame], migrate_legacy: bool = False) -> None:
     """Merge each table's new rows into per-month parquet partitions.
 
     The previous version kept every gold table as one monolithic CSV and, for
@@ -642,7 +715,14 @@ def save_gold_tables(tables: Dict[str, pd.DataFrame]) -> None:
         if miss:
             raise RuntimeError(f"gold table {name} missing key columns {miss}")
 
-        migrate_csv_to_partitions(name)
+        # La migrazione dal CSV monolitico e' esplicita, mai automatica: se
+        # scatta durante una ricostruzione completa, le partizioni nascono
+        # popolate con i dati vecchi e il merge successivo tiene in vita ogni
+        # riga la cui chiave non esiste piu' nel nuovo output. E' esattamente
+        # cosi' che una categoria "None" ormai eliminata e' sopravvissuta a un
+        # rebuild da zero, gonfiando i totali del 3%.
+        if migrate_legacy:
+            migrate_csv_to_partitions(name)
         ensure_dir(os.path.join(PARTS_DIR, name))
 
         for mese, part_new in df_new.groupby("mese", dropna=False):
@@ -700,7 +780,7 @@ def _month_keys_between(d0: date, d1: date) -> List[str]:
     return sorted(out)
 
 
-def main(months: Optional[List[str]] = None, chunk_size: int = 3) -> None:
+def main(months: Optional[List[str]] = None, chunk_size: int = 3, migrate_legacy: bool = False) -> None:
     cfg = load_yaml("config/pipeline.yml")
 
     if months is None:
@@ -713,16 +793,19 @@ def main(months: Optional[List[str]] = None, chunk_size: int = 3) -> None:
         print("no silver found, will not build gold")
         return
 
+    # La mappa dei codici canonici si costruisce una volta, su tutto lo storico:
+    # solo cosi' due codici della stessa stazione usati in mesi diversi finiscono
+    # nello stesso gruppo. Prima veniva azzerata a ogni chunk e ricostruita sui
+    # soli mesi in lavorazione.
+    code_map = seed_station_code_map_from_history()
+    print(f"  mappa codici stazione: {len(code_map)} alias su tutto lo storico")
+
     # Process months in chunks to limit memory usage and avoid timeouts.
     # Each chunk's gold tables are merged with existing gold via save_gold_tables.
     all_table_names: Set[str] = set()
     for i in range(0, len(months), chunk_size):
         chunk = months[i : i + chunk_size]
         print(f"  processing chunk {i // chunk_size + 1}: months {chunk}")
-
-        # Reset code_map cache so it picks up any new data written by previous chunks
-        global _station_code_map_cache
-        _station_code_map_cache = None
 
         df = load_silver(chunk)
         if df.empty:
@@ -747,7 +830,7 @@ def main(months: Optional[List[str]] = None, chunk_size: int = 3) -> None:
             continue
 
         tables = build_gold(cfg, dfm)
-        save_gold_tables(tables)
+        save_gold_tables(tables, migrate_legacy=migrate_legacy)
         all_table_names.update(tables.keys())
 
         # Free memory
@@ -764,6 +847,9 @@ if __name__ == "__main__":
     ap.add_argument("--start", required=False, help="YYYY-MM-DD (optional shortcut to derive months)")
     ap.add_argument("--end", required=False, help="YYYY-MM-DD (optional shortcut to derive months)")
     ap.add_argument("--chunk-size", type=int, default=3, help="Months per processing chunk (default: 3)")
+    ap.add_argument("--migrate-legacy", action="store_true",
+                    help="Semina le partizioni dai CSV gold monolitici prima di aggiornarle. "
+                         "Solo per il primo passaggio al formato partizionato, mai in un rebuild.")
     args = ap.parse_args()
 
     months_arg: Optional[List[str]] = args.months if args.months else None
@@ -772,4 +858,4 @@ if __name__ == "__main__":
         d1 = date.fromisoformat(args.end) if args.end else d0
         months_arg = _month_keys_between(d0, d1)
 
-    main(months_arg, chunk_size=args.chunk_size)
+    main(months_arg, chunk_size=args.chunk_size, migrate_legacy=args.migrate_legacy)

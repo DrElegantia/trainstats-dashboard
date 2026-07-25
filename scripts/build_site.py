@@ -86,6 +86,38 @@ def strip_name_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=drop) if drop else df
 
 
+# Colonne il cui dominio e' un piccolo insieme chiuso di etichette lunghe.
+# Su hist_stazioni_dettaglio_categoria_ruolo ogni riga ripeteva
+# "infrasettimanale", "tarda_mattina", "partenza" e un'etichetta di bucket
+# quotata: 1,18 milioni di volte, per 78 MB di CSV. Pubblicate come indice
+# intero, con il codebook nel manifest, la stessa tabella scende a 41 MB.
+ENCODED_COLUMNS = ["tipo_giorno", "fascia_oraria", "ruolo", "bucket_ritardo_arrivo"]
+
+
+def harvest_codebook(df: pd.DataFrame, codebook: Dict[str, List[str]]) -> None:
+    for col in ENCODED_COLUMNS:
+        if col not in df.columns:
+            continue
+        known = codebook.setdefault(col, [])
+        seen = set(known)
+        for v in df[col].dropna().astype(str).unique():
+            if v not in seen:
+                seen.add(v)
+                known.append(v)
+
+
+def encode_frame(df: pd.DataFrame, codebook: Dict[str, List[str]]) -> pd.DataFrame:
+    out = df
+    for col in ENCODED_COLUMNS:
+        if col not in out.columns or col not in codebook:
+            continue
+        index = {v: i for i, v in enumerate(codebook[col])}
+        if out is df:
+            out = df.copy()
+        out[col] = out[col].astype(str).map(index).astype("Int64")
+    return out
+
+
 def write_table(df: pd.DataFrame, target: Path, name: str) -> List[str]:
     """Write the full table plus, for heavy tables, one file per year."""
     written: List[str] = []
@@ -140,6 +172,7 @@ def main() -> None:
     # passata raccoglie i nomi, che devono essere completi prima di poterli
     # rimuovere dalle tabelle nella seconda.
     pairs: Dict[str, str] = {}
+    codebook: Dict[str, List[str]] = {}
     present: List[str] = []
     for name in names:
         df = read_gold_table(name)
@@ -148,6 +181,7 @@ def main() -> None:
             continue
         present.append(name)
         harvest_station_names(df, pairs)
+        harvest_codebook(df, codebook)
         del df
 
     if not present:
@@ -160,7 +194,7 @@ def main() -> None:
     files: List[str] = ["station_names.csv"]
     years: Set[str] = set()
     for name in present:
-        compact = compact_frame(strip_name_columns(read_gold_table(name)))
+        compact = compact_frame(encode_frame(strip_name_columns(read_gold_table(name)), codebook))
         if "mese" in compact.columns:
             years.update(compact["mese"].astype(str).str.slice(0, 4).unique())
         written = write_table(compact, target, name)
@@ -180,6 +214,9 @@ def main() -> None:
         "built_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "gold_files": sorted(f"{n}.csv" for n in present),
         "delay_bucket_labels": bucket_labels,
+        # Indice -> etichetta per le colonne codificate. Senza questo il
+        # client non sa leggere i CSV, quindi va pubblicato sempre.
+        "codebook": codebook,
         "year_sharded": sorted(n for n in present if n in YEAR_SHARDED),
         "years": sorted(y for y in years if y.isdigit()),
         "station_names_file": "station_names.csv",

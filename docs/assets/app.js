@@ -398,8 +398,41 @@ function normalizeText(s) {
 
 /** Normalize station name for grouping codes that refer to the same station.
  *  Handles Trenord/FerrovieNord vs RFI naming differences. */
+/**
+ * Deve restare allineata a normalize_station_name() in scripts/utils.py: se le
+ * due divergono, il browser raggruppa nelle tendine stazioni che la pipeline ha
+ * tenuto separate (o viceversa).
+ *
+ * La sorgente alterna forma lunga e abbreviata per la stessa stazione
+ * ("BOLOGNA C.LE" / "BOLOGNA CENTRALE", "VENEZIA S.LUCIA" / "VENEZIA SANTA
+ * LUCIA"). Da "S." non si puo' dedurre se valga SAN o SANTA, quindi tutte le
+ * forme collassano su un unico token.
+ */
+var _STATION_ABBREV = [
+  [/\bC\.?\s?L\.?E\.?\b/g, "CENTRALE"],
+  [/\bCENT\.?\b/g, "CENTRALE"],
+  [/\bS\.?M\.?N\.?\b/g, "S MARIA NOVELLA"],
+  [/\bP\.?\s?TA\b/g, "PORTA"],
+  [/\bP\.?\s?Z(?:Z)?A\b/g, "PIAZZA"],
+  [/\bP\.?\s?NUOVA\b/g, "PORTA NUOVA"],
+  [/\bAER\.?\b/g, "AEROPORTO"],
+  [/\bM\.?\s?MO\b/g, "MARITTIMO"],
+  [/\bMAR\.?\s?MO\b/g, "MARITTIMO"],
+  [/\bSCR\.?\b/g, "SCRIVIA"],
+  [/\bMOV\.?\b/g, "MOVIMENTO"],
+  [/\bSS\.?\b/g, "S"],
+  [/\bSANTI\b/g, "S"],
+  [/\bSANTA\b/g, "S"],
+  [/\bSANTO\b/g, "S"],
+  [/\bSANT'/g, "S "],
+  [/\bSAN\b/g, "S"],
+  [/\bS\./g, "S "],
+  [/\bF\.?S\.?\b/g, ""]
+];
+
 function normalizeStationName(s) {
-  var t = String(s || "").toUpperCase().trim().replace(/\s+/g, " ");
+  var t = String(s || "").toUpperCase().trim();
+  t = t.replace(/-/g, " ").replace(/'/g, "' ").replace(/\s+/g, " ");
   // Expand "M N" abbreviation (Trenord: Milano Nord)
   t = t.replace(/^M N\b/, "MILANO NORD");
   // Strip " FNM" suffix (FerrovieNord Milano)
@@ -408,6 +441,10 @@ function normalizeStationName(s) {
   t = t.replace(/\s+POLITECNICO$/, "");
   // Strip "NORD" after known city prefixes (Trenord convention)
   t = t.replace(/\b(MILANO|COMO|VARESE)\s+NORD\b/, "$1");
+  for (var i = 0; i < _STATION_ABBREV.length; i++) {
+    t = t.replace(_STATION_ABBREV[i][0], _STATION_ABBREV[i][1]);
+  }
+  t = t.replace(/'/g, "").replace(/\./g, " ");
   return t.replace(/\s+/g, " ").trim();
 }
 
@@ -1562,6 +1599,34 @@ function renderHist() {
     if (isBucketOver5(raw)) delayMinsOver5 += toNum(r.minuti_ritardo);
   }
 
+  // Dichiara sopra al grafico su quale popolazione e' calcolata la
+  // distribuzione: con entrambe le stazioni selezionate non e' la coppia
+  // origine-destinazione, e senza dirlo il confronto con i KPI non torna.
+  const noteEl = (function() {
+    let n = document.getElementById("histScopeNote");
+    if (!n) {
+      const badges = document.getElementById("badgesHist");
+      if (!badges || !badges.parentNode) return null;
+      n = document.createElement("div");
+      n.id = "histScopeNote";
+      n.className = "card-desc card-desc--warn";
+      badges.parentNode.insertBefore(n, badges.nextSibling);
+    }
+    return n;
+  }());
+  if (noteEl) {
+    if (stationFiltered && state.filters.arr !== "all" && state.filters.dep !== "all") {
+      const arrSel = document.getElementById("arrSel");
+      const arrName = arrSel && arrSel.selectedIndex >= 0 ? arrSel.options[arrSel.selectedIndex].text : state.filters.arr;
+      noteEl.textContent = "Distribuzione di tutti gli arrivi a " + arrName
+        + " (" + fmtInt(total) + " corse misurate), da qualunque origine: il filtro di partenza non si applica a questo grafico.";
+      noteEl.style.display = "";
+    } else {
+      noteEl.textContent = "";
+      noteEl.style.display = "none";
+    }
+  }
+
   const order = Array.isArray(state.manifest.delay_bucket_labels) && state.manifest.delay_bucket_labels.length
     ? state.manifest.delay_bucket_labels : safeManifestDefaults().delay_bucket_labels;
 
@@ -2061,12 +2126,12 @@ function renderFilterBadges() {
   if (f.dep !== "all") {
     var depSel = document.getElementById("depSel");
     depLabel = depSel ? depSel.options[depSel.selectedIndex].text : f.dep;
-    badges.push({ label: "Partenza: " + depLabel, type: "active", stationFilter: true });
+    badges.push({ label: "Partenza: " + depLabel, type: "active", stationFilter: true, kind: "dep" });
   }
   if (f.arr !== "all") {
     var arrSel = document.getElementById("arrSel");
     arrLabel = arrSel ? arrSel.options[arrSel.selectedIndex].text : f.arr;
-    badges.push({ label: "Arrivo: " + arrLabel, type: "active", stationFilter: true });
+    badges.push({ label: "Arrivo: " + arrLabel, type: "active", stationFilter: true, kind: "arr" });
   }
 
   // Day type
@@ -2098,6 +2163,15 @@ function renderFilterBadges() {
     { id: "badgesTop10", stationApplies: false }
   ];
 
+  // L'istogramma nasce dalla tabella per stazione, che conosce il ruolo
+  // (partenza o arrivo) ma non la coppia origine-destinazione. Con entrambi gli
+  // estremi selezionati puo' rispondere solo su uno dei due, e sceglie
+  // l'arrivo. Prima mostrava comunque entrambi i badge come attivi: con
+  // "Milano Centrale -> Verona P.N." disegnava la distribuzione di TUTTI gli
+  // arrivi a Verona (12.102 corse) mentre i KPI ne contavano 2.117, e gli
+  // anticipi visibili appartenevano ad altre tratte.
+  var histIgnoresDep = (f.dep !== "all" && f.arr !== "all");
+
   targets.forEach(function(t) {
     var el = document.getElementById(t.id);
     if (!el) return;
@@ -2105,6 +2179,16 @@ function renderFilterBadges() {
     if (badges.length === 0) return;
 
     badges.forEach(function(b) {
+      var naPerHist = (t.id === "badgesHist" && histIgnoresDep && b.kind === "dep");
+      if (naPerHist) {
+        var na = document.createElement("span");
+        na.className = "filter-badge filter-badge--na";
+        na.textContent = b.label;
+        na.title = "La distribuzione e' calcolata su tutti gli arrivi nella stazione di arrivo selezionata, "
+                 + "qualunque sia l'origine: la tabella per stazione non contiene la coppia origine-destinazione.";
+        el.appendChild(na);
+        return;
+      }
       if (b.stationFilter && !t.stationApplies) {
         // Show as non-applicable
         var span = document.createElement("span");

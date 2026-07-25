@@ -789,3 +789,11 @@ body.embed-mode .embed-hide {
   25% { transform: translateX(-3px); }
   75% { transform: translateX(3px); }
 }
+
+/* Nota di ambito su un grafico calcolato su una popolazione diversa da quella
+   dei filtri attivi: va vista, non deve sembrare testo descrittivo neutro. */
+.card-desc--warn {
+  border-left: 3px solid #e08a1e;
+  padding-left: 10px;
+  color: #7a4a00;
+}

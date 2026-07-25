@@ -134,6 +134,40 @@ def write_json(path: str, obj: Dict[str, Any]) -> None:
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
 
+# Abbreviazioni ferroviarie italiane. La sorgente alterna le forme lunghe e
+# quelle abbreviate per la stessa stazione ("BOLOGNA C.LE" e "BOLOGNA CENTRALE",
+# "FIRENZE S.M.N." e "FIRENZE SANTA MARIA NOVELLA"): senza espanderle il
+# raggruppamento per nome le tratta come stazioni diverse, e le statistiche di
+# 810.418 corse (il 6,5% del totale) finivano spezzate in due.
+_ABBREVIATIONS = [
+    (r"\bC\.?\s?L\.?E\.?\b", "CENTRALE"),
+    (r"\bCENT\.?\b", "CENTRALE"),
+    (r"\bS\.?M\.?N\.?\b", "S MARIA NOVELLA"),
+    (r"\bP\.?\s?TA\b", "PORTA"),
+    (r"\bP\.?\s?Z(?:Z)?A\b", "PIAZZA"),
+    (r"\bP\.?\s?NUOVA\b", "PORTA NUOVA"),
+    (r"\bAER\.?\b", "AEROPORTO"),
+    (r"\bM\.?\s?MO\b", "MARITTIMO"),
+    (r"\bMAR\.?\s?MO\b", "MARITTIMO"),
+    (r"\bSCR\.?\b", "SCRIVIA"),
+    (r"\bMOV\.?\b", "MOVIMENTO"),
+    # Tutte le forme di "San/Santa/Santo/Santi" collassano su un unico token.
+    # La sorgente scrive "VENEZIA S.LUCIA" e "VENEZIA SANTA LUCIA" per la stessa
+    # stazione, e da "S." non si puo' dedurre se valga SAN o SANTA: unificarle
+    # e' l'unico modo di non spezzarle.
+    (r"\bSS\.?\b", "S"),
+    (r"\bSANTI\b", "S"),
+    (r"\bSANTA\b", "S"),
+    (r"\bSANTO\b", "S"),
+    (r"\bSANT'", "S "),
+    (r"\bSAN\b", "S"),
+    (r"\bS\.", "S "),
+    (r"\bF\.?S\.?\b", ""),
+]
+
+_ABBREVIATIONS_COMPILED = [(re.compile(p), r) for p, r in _ABBREVIATIONS]
+
+
 def normalize_station_name(x: Any) -> str:
     """Normalize station name for matching across different naming conventions.
 
@@ -142,11 +176,27 @@ def normalize_station_name(x: Any) -> str:
       - "COMO NORD CAMERLATA" -> "COMO CAMERLATA"
       - "MILANO BOVISA FNM" -> "MILANO BOVISA"
       - "MILANO BOVISA POLITECNICO" -> "MILANO BOVISA"
+
+    e le abbreviazioni ferroviarie:
+      - "BOLOGNA C.LE" -> "BOLOGNA CENTRALE"
+      - "FIRENZE S.M.N." -> "FIRENZE S MARIA NOVELLA"
+      - "VENEZIA S.LUCIA" e "VENEZIA SANTA LUCIA" -> "VENEZIA S LUCIA"
     """
     if x is None:
         return ""
     s = str(x).strip().upper()
+    # I separatori interni alternano spazio, punto e trattino per la stessa
+    # stazione ("ALBAIRATE-VERMEZZO" e "ALBAIRATE VERMEZZO").
+    s = s.replace("-", " ").replace("'", "' ")
     s = re.sub(r"\s+", " ", s)
+
+    for rx, repl in _ABBREVIATIONS_COMPILED:
+        s = rx.sub(repl, s)
+
+    # I punti residui delle abbreviazioni gia' espanse ("S.M.N." lascia il
+    # punto finale) non devono distinguere due grafie della stessa stazione.
+    s = s.replace("'", "").replace(".", " ")
+    s = re.sub(r"\s+", " ", s).strip()
 
     # Expand "M N" abbreviation (Trenord: Milano Nord)
     s = re.sub(r"^M N\b", "MILANO NORD", s)
