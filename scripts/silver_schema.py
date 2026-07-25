@@ -52,6 +52,51 @@ def code_from_station_name(name: Any) -> str:
     return f"N_{digest}"
 
 
+def epoch_series_to_it_string(values: pd.Series) -> pd.Series:
+    """Vectorized epoch -> "dd/mm/YYYY HH:MM" conversion in Europe/Rome.
+
+    epoch_to_it_string() built and formatted one Timestamp per cell, the same
+    per-row pandas construction cost that dominated the silver build.
+    """
+    num = pd.to_numeric(values, errors="coerce")
+    num = num.where(num.notna() & (num != 0))
+    ts = pd.to_datetime(num, unit="s", utc=True, errors="coerce")
+    return ts.dt.tz_convert("Europe/Rome").dt.strftime("%d/%m/%Y %H:%M").fillna("")
+
+
+# Keys carried by the "treni" payload of the legacy bronze layout:
+#   pr       provvedimento on the whole run ("Soppresso")
+#   dl       free-text variation ("Treno cancellato da X a Y. Arriva a X")
+#   cn       renumbering ("25455,CHIASSO")
+#   oo / od  originally scheduled origin / destination when the run was limited
+# Only c/n/p/a/op/oa/rp/ra were read, so every status signal in the legacy
+# files was thrown away and those months reported exactly zero cancellations.
+_PAYLOAD_COLUMNS = {
+    "Categoria": "c",
+    "Numero treno": "n",
+    "Nome stazione partenza": "p",
+    "Nome stazione arrivo": "a",
+    "Ritardo partenza": "rp",
+    "Ritardo arrivo": "ra",
+    "Cambi numerazione": "cn",
+    "Provvedimenti": "pr",
+    "Variazioni": "dl",
+    "Origine programmata": "oo",
+    "Destinazione programmata": "od",
+}
+
+_EMPTY_COLUMNS = [
+    "Codice stazione partenza",
+    "Codice stazione arrivo",
+    "Stazione estera partenza",
+    "Orario estero partenza",
+    "Stazione estera arrivo",
+    "Orario estero arrivo",
+]
+
+_CARRIED_COLUMNS = ["_extracted_at_utc", "_bronze_path", "_reference_date"]
+
+
 def normalize_bronze_schema(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize known bronze layouts into the historical tabular schema."""
     if "Categoria" in df.columns and "Numero treno" in df.columns:
@@ -60,35 +105,22 @@ def normalize_bronze_schema(df: pd.DataFrame) -> pd.DataFrame:
     if "treni" not in df.columns:
         return df
 
-    rows: List[Dict[str, Any]] = []
-    for _, r in df.iterrows():
-        for t in parse_treni_payload(r.get("treni")):
-            rows.append(
-                {
-                    "Categoria": t.get("c", ""),
-                    "Numero treno": t.get("n", ""),
-                    "Codice stazione partenza": "",
-                    "Nome stazione partenza": t.get("p", ""),
-                    "Ora partenza programmata": epoch_to_it_string(t.get("op")),
-                    "Ritardo partenza": t.get("rp", ""),
-                    "Codice stazione arrivo": "",
-                    "Nome stazione arrivo": t.get("a", ""),
-                    "Ora arrivo programmata": epoch_to_it_string(t.get("oa")),
-                    "Ritardo arrivo": t.get("ra", ""),
-                    "Cambi numerazione": "",
-                    "Provvedimenti": "",
-                    "Variazioni": "",
-                    "Stazione estera partenza": "",
-                    "Orario estero partenza": "",
-                    "Stazione estera arrivo": "",
-                    "Orario estero arrivo": "",
-                    "_extracted_at_utc": r.get("_extracted_at_utc", ""),
-                    "_bronze_path": r.get("_bronze_path", ""),
-                    "_reference_date": r.get("_reference_date", ""),
-                }
-            )
+    records: List[Dict[str, Any]] = []
+    for r in df.itertuples(index=False):
+        carried = {c: getattr(r, c, "") for c in _CARRIED_COLUMNS}
+        for t in parse_treni_payload(getattr(r, "treni", None)):
+            rec = {out: t.get(key, "") for out, key in _PAYLOAD_COLUMNS.items()}
+            rec["_op_epoch"] = t.get("op")
+            rec["_oa_epoch"] = t.get("oa")
+            rec.update(carried)
+            records.append(rec)
 
-    if not rows:
+    if not records:
         return df.iloc[0:0].copy()
 
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(records)
+    out["Ora partenza programmata"] = epoch_series_to_it_string(out.pop("_op_epoch"))
+    out["Ora arrivo programmata"] = epoch_series_to_it_string(out.pop("_oa_epoch"))
+    for c in _EMPTY_COLUMNS:
+        out[c] = ""
+    return out

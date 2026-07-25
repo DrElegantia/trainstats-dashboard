@@ -11,8 +11,13 @@ data/silver_trains/
 # eventuali database locali
 *.duckdb
 
-# gold parquet non necessari
-data/gold/**/*.parquet
+# Le partizioni mensili parquet in data/gold/parts/ SONO lo store gold
+# versionato: piccole, e ogni run notturno ne tocca una sola. Prima il gold
+# viveva come CSV monolitici riscritti per intero ogni notte, ed e' cosi' che
+# la history del repo e' arrivata a 6,5 GB. I CSV restano un artefatto
+# derivato, rigenerato da build_site verso docs/data/.
+data/gold/*.csv
+!data/gold/stations_dim.csv
 
 # bronze: ignoriamo solo csv non compressi
 data/bronze/**/*.csv

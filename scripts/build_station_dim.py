@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Set, Optional, Tuple
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 try:
     from geopy.geocoders import Nominatim
@@ -53,50 +54,59 @@ def _normalize_for_match(name: str) -> str:
     return s
 
 
-def collect_station_codes() -> Set[str]:
-    """Raccoglie tutti i codici stazione unici dai file silver."""
-    codes: Set[str] = set()
-    silver_root = Path("data") / "silver"
-    if not silver_root.exists():
-        return codes
-    for parquet_file in silver_root.rglob("*.parquet"):
-        try:
-            df = pd.read_parquet(parquet_file)
-            if "cod_partenza" in df.columns:
-                codes.update(df["cod_partenza"].dropna().astype(str).unique())
-            if "cod_arrivo" in df.columns:
-                codes.update(df["cod_arrivo"].dropna().astype(str).unique())
-        except Exception as e:
-            print(f"Warning: Could not read {parquet_file}: {e}")
-    return codes
+def collect_station_directory() -> Dict[str, str]:
+    """Codice stazione -> nome, raccolti dai file silver in una sola passata.
 
-
-def collect_station_names() -> Dict[str, str]:
-    """Raccoglie i nomi delle stazioni dai file silver."""
+    Prima esistevano due funzioni separate (codici e nomi) che leggevano
+    entrambe per intero ogni parquet silver, e quella dei nomi iterava con
+    iterrows() su tutte le righe: due passate complete e milioni di righe
+    boxate in Series per estrarre poche migliaia di coppie distinte. Qui si
+    leggono solo le quattro colonne utili e si deduplica in pandas.
+    """
     names: Dict[str, str] = {}
     silver_root = Path("data") / "silver"
     if not silver_root.exists():
         return names
-    for parquet_file in silver_root.rglob("*.parquet"):
+
+    wanted = ["cod_partenza", "nome_partenza", "cod_arrivo", "nome_arrivo"]
+
+    for parquet_file in sorted(silver_root.rglob("*.parquet")):
         try:
-            df = pd.read_parquet(parquet_file)
-            if "cod_partenza" in df.columns and "nome_partenza" in df.columns:
-                part_df = df[["cod_partenza", "nome_partenza"]].dropna()
-                for _, row in part_df.iterrows():
-                    code = str(row["cod_partenza"])
-                    name = str(row["nome_partenza"])
-                    if code and name and code not in names:
-                        names[code] = name
-            if "cod_arrivo" in df.columns and "nome_arrivo" in df.columns:
-                arr_df = df[["cod_arrivo", "nome_arrivo"]].dropna()
-                for _, row in arr_df.iterrows():
-                    code = str(row["cod_arrivo"])
-                    name = str(row["nome_arrivo"])
-                    if code and name and code not in names:
-                        names[code] = name
+            # Lo schema si legge dal footer del parquet, senza materializzare
+            # nessuna riga: serve solo a sapere quali colonne chiedere.
+            available = set(pq.read_schema(parquet_file).names)
+            cols = [c for c in wanted if c in available]
+            if not cols:
+                continue
+            df = pd.read_parquet(parquet_file, columns=cols)
         except Exception as e:
             print(f"Warning: Could not read {parquet_file}: {e}")
+            continue
+
+        for code_col, name_col in (("cod_partenza", "nome_partenza"), ("cod_arrivo", "nome_arrivo")):
+            if code_col not in df.columns:
+                continue
+            if name_col in df.columns:
+                sub = df[[code_col, name_col]].dropna().drop_duplicates(subset=[code_col])
+                pairs = zip(sub[code_col].astype(str), sub[name_col].astype(str))
+            else:
+                sub = df[[code_col]].dropna().drop_duplicates()
+                pairs = ((c, "") for c in sub[code_col].astype(str))
+
+            for code, name in pairs:
+                code = code.strip()
+                if code and code not in names:
+                    names[code] = name.strip()
+
     return names
+
+
+def collect_station_codes() -> Set[str]:
+    return set(collect_station_directory().keys())
+
+
+def collect_station_names() -> Dict[str, str]:
+    return {c: n for c, n in collect_station_directory().items() if n}
 
 
 def load_cached_stations() -> pd.DataFrame:
@@ -202,8 +212,11 @@ def build_station_dim(enable_geocoding: bool = True) -> pd.DataFrame:
     file silver correnti, in modo che la dimensione sia completa anche quando
     il workflow processa solo un sottoinsieme di date.
     """
-    codes = collect_station_codes()
-    names = collect_station_names()
+    # Una sola scansione del silver per entrambi: codici e nomi arrivano
+    # dallo stesso dizionario invece che da due passate complete.
+    directory = collect_station_directory()
+    codes = set(directory.keys())
+    names = {c: n for c, n in directory.items() if n}
 
     # Carica cache completa
     cache_df = load_cached_stations()

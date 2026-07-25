@@ -16,6 +16,23 @@ quality:
 punctuality:
   on_time_threshold_minutes: 4
 
+# Validity window for the arrival-delay measurement coming from the source.
+# ViaggiaTreno occasionally emits values no train can produce (an hour and a
+# half "early", or a delay longer than a day). They are rare (4 records in 562k
+# fall below -60) but they dominate any route with a handful of runs, which is
+# how single-observation routes ended up displaying -85 minutes.
+# Values outside the window count as "not measured", never as zero.
+delay_validity:
+  min_minutes: -90
+  max_minutes: 1440
+
+# A train that never ran still carries ritardo=0 in the feed. Counting that
+# zero as a punctual arrival inflated punctuality and dragged the average
+# delay down, so delay statistics are computed only over these states.
+delay_states:
+  - effettuato
+  - parzialmente_cancellato
+
 delay_buckets_minutes:
   edges: [-9999, -60, -30, -15, -10, -5, -1, 0, 1, 5, 10, 15, 30, 60, 120, 9999]
   labels:
@@ -36,14 +53,16 @@ delay_buckets_minutes:
     - "> 120"
 
 status_rules:
+  # Canonical (post-rename) column names. These used to be the source's
+  # capitalised headers, but classification runs after canonical_rename(), so
+  # no field ever matched and every train was recorded as "effettuato" —
+  # which is why cancellations read 0.00% for every month up to 2025-11.
   text_fields:
-    - "Provvedimenti"
-    - "Variazioni"
-    - "Cambi numerazione"
-    - "Nome stazione partenza 0"
-    - "Nome stazione arrivo 0"
-    - "Stazione estera partenza"
-    - "Stazione estera arrivo"
+    - "provvedimenti"
+    - "variazioni"
+    - "cambi_numerazione"
+    - "stazione_estera_partenza"
+    - "stazione_estera_arrivo"
   patterns:
     cancelled:
       any:
@@ -53,13 +72,20 @@ status_rules:
     suppressed:
       any:
         - "(?i)\\bsoppress"
-        - "(?i)\\bsoppres"
+    # A partial cancellation describes a train that ran on a shortened route.
+    # "Treno cancellato da X a Y. Arriva a X" is the dominant wording in the
+    # feed and also matches the generic "cancellat" pattern above, so it is
+    # tested first and wins.
     partial_cancelled:
       any:
+        - "(?i)\\bcancellat[oa]\\s+da\\b.*\\ba\\b"
+        - "(?i)\\bfermat[ae]\\s+soppress"
         - "(?i)\\bparzial"
         - "(?i)\\blimitat"
         - "(?i)\\binterrott"
         - "(?i)\\bprosegue\\s+da\\b"
+        - "(?i)\\bparte\\s+da\\b"
+        - "(?i)\\barriva\\s+a\\b"
         - "(?i)\\bdevia"
     performed:
       default: true

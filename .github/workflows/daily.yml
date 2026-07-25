@@ -92,8 +92,10 @@ jobs:
 
       - name: Verify output files
         run: |
-          echo "=== Checking data/gold ==="
-          ls -lah data/gold/ || echo "data/gold not found"
+          echo "=== Checking data/gold partitions ==="
+          du -sh data/gold/parts/* 2>/dev/null || echo "data/gold/parts not found"
+          echo "=== Checking docs/data (artefatto Pages) ==="
+          ls -lah docs/data/ | head -30 || echo "docs/data not found"
           
           echo "=== Checking stations cache ==="
           ls -lah stations/stations.csv || echo "stations/stations.csv not found (first run)"
@@ -110,9 +112,10 @@ jobs:
           print(f'Total: {total}, With coords: {with_coords}, Missing: {total - with_coords}')
           " || true
 
-      - name: Update stations unknown list (optional)
-        run: |
-          python -m scripts.update_stations || true
+      # Lo step "Update stations unknown list" invocava scripts.update_stations,
+      # un modulo che non esiste nel repo: il `|| true` mascherava un
+      # ModuleNotFoundError a ogni run notturno. Rimosso finche' il modulo non
+      # viene effettivamente scritto.
 
       - name: Commit generated data and docs
         env:

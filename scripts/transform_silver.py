@@ -1,10 +1,9 @@
 # scripts/transform_silver.py
 from __future__ import annotations
 
-import ast
 import gzip
 import os
-import re
+from concurrent.futures import ProcessPoolExecutor
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,8 +15,8 @@ from .utils import (
     ensure_dir,
     load_yaml,
     normalize_station_name,
-    parse_dt_it,
-    safe_int,
+    parse_dt_it_series,
+    safe_int_series,
 )
 
 from .silver_schema import (
@@ -61,76 +60,6 @@ def read_bronze(csv_gz: str, meta_path: str) -> pd.DataFrame:
     return df
 
 
-def _epoch_to_it_string(v: Any) -> str:
-    if v is None:
-        return ""
-    s = str(v).strip()
-    if s == "" or s == "0":
-        return ""
-    try:
-        ts = pd.to_datetime(int(float(s)), unit="s", utc=True).tz_convert("Europe/Rome")
-        return ts.strftime("%d/%m/%Y %H:%M")
-    except Exception:
-        return ""
-
-
-def _parse_treni_payload(x: Any) -> List[Dict[str, Any]]:
-    if x is None:
-        return []
-    s = str(x).strip()
-    if not s or s.lower() == "nan":
-        return []
-    try:
-        parsed = ast.literal_eval(s)
-    except Exception:
-        return []
-    if isinstance(parsed, list):
-        return [r for r in parsed if isinstance(r, dict)]
-    return []
-
-
-def normalize_bronze_schema(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize known bronze layouts into the historical tabular schema."""
-    if "Categoria" in df.columns and "Numero treno" in df.columns:
-        return df
-
-    if "treni" not in df.columns:
-        return df
-
-    rows: List[Dict[str, Any]] = []
-    for _, r in df.iterrows():
-        for t in _parse_treni_payload(r.get("treni")):
-            rows.append(
-                {
-                    "Categoria": t.get("c", ""),
-                    "Numero treno": t.get("n", ""),
-                    "Codice stazione partenza": "",
-                    "Nome stazione partenza": t.get("p", ""),
-                    "Ora partenza programmata": _epoch_to_it_string(t.get("op")),
-                    "Ritardo partenza": t.get("rp", ""),
-                    "Codice stazione arrivo": "",
-                    "Nome stazione arrivo": t.get("a", ""),
-                    "Ora arrivo programmata": _epoch_to_it_string(t.get("oa")),
-                    "Ritardo arrivo": t.get("ra", ""),
-                    "Cambi numerazione": "",
-                    "Provvedimenti": "",
-                    "Variazioni": "",
-                    "Stazione estera partenza": "",
-                    "Orario estero partenza": "",
-                    "Stazione estera arrivo": "",
-                    "Orario estero arrivo": "",
-                    "_extracted_at_utc": r.get("_extracted_at_utc", ""),
-                    "_bronze_path": r.get("_bronze_path", ""),
-                    "_reference_date": r.get("_reference_date", ""),
-                }
-            )
-
-    if not rows:
-        return df.iloc[0:0].copy()
-
-    return pd.DataFrame(rows)
-
-
 def canonical_rename(df: pd.DataFrame) -> pd.DataFrame:
     rename_map = {
         "Categoria": "categoria",
@@ -150,6 +79,10 @@ def canonical_rename(df: pd.DataFrame) -> pd.DataFrame:
         "Orario estero partenza": "orario_estero_partenza",
         "Stazione estera arrivo": "stazione_estera_arrivo",
         "Orario estero arrivo": "orario_estero_arrivo",
+        # Presenti solo nel layout bronze legacy, dove indicano origine e
+        # destinazione da orario quando la corsa e' stata limitata.
+        "Origine programmata": "origine_programmata",
+        "Destinazione programmata": "destinazione_programmata",
     }
     present = {k: v for k, v in rename_map.items() if k in df.columns}
     return df.rename(columns=present)
@@ -177,28 +110,39 @@ def make_row_id(df: pd.DataFrame) -> pd.Series:
     return pd.util.hash_pandas_object(base, index=False).astype("uint64").astype(str)
 
 
-_re_cancel = re.compile(r"\btreno\s+cancellat[oa]\b|\bcancellat[oa]\b", re.IGNORECASE)
-_re_supp = re.compile(r"\bsoppresso\b", re.IGNORECASE)
-_re_partial = re.compile(
-    r"\bfermat[ae]\s+soppress[ae]\b|\bfermate\s+soppresse\b|\bfermata\s+soppressa\b",
-    re.IGNORECASE,
-)
+def _map_over_unique(values: pd.Series, fn) -> pd.Series:
+    """Apply fn once per distinct value instead of once per row.
+
+    A daily bronze file holds ~9k rows but only ~2k distinct station names, and
+    both normalize_station_name() and code_from_station_name() are pure, so the
+    per-row .map() was doing four to five times the necessary regex work.
+    """
+    s = values if isinstance(values, pd.Series) else pd.Series(values)
+    s = s.astype(str)
+    if s.empty:
+        return s
+    lookup = {v: fn(v) for v in s.unique()}
+    return s.map(lookup)
 
 
-def _status_fallback_series(df: pd.DataFrame) -> pd.Series:
-    prov = df.get("provvedimenti", pd.Series([""] * len(df))).astype(str).fillna("")
-    var = df.get("variazioni", pd.Series([""] * len(df))).astype(str).fillna("")
-    hay = (prov + " | " + var).astype(str)
+def _normalize_names(values: pd.Series) -> pd.Series:
+    return _map_over_unique(values, normalize_station_name)
 
-    is_partial = hay.str.contains(_re_partial, na=False)
-    is_soppresso = prov.str.strip().str.contains(_re_supp, na=False) & (~is_partial)
-    is_cancellato = hay.str.contains(_re_cancel, na=False)
 
-    out = pd.Series([""] * len(df), index=df.index, dtype=object)
-    out[is_partial] = "parzialmente_cancellato"
-    out[is_soppresso] = "soppresso"
-    out[is_cancellato] = "cancellato"
-    return out
+def _codes_from_names(values: pd.Series) -> pd.Series:
+    return _map_over_unique(values, code_from_station_name)
+
+
+# Text columns the status engine reads. Absent ones are created empty so that
+# StatusEngine.haystack() always has something to join, whichever bronze
+# layout produced the frame.
+_STATUS_TEXT_COLUMNS = [
+    "provvedimenti",
+    "variazioni",
+    "cambi_numerazione",
+    "stazione_estera_partenza",
+    "stazione_estera_arrivo",
+]
 
 
 def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
@@ -224,41 +168,42 @@ def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
         path = str(df.get("_bronze_path", pd.Series([""])).iloc[0]) if len(df) else ""
         raise RuntimeError(f"silver missing required columns after rename: {missing} (file={path})")
 
-    df["provvedimenti"] = df.get("provvedimenti", "").astype(str).fillna("")
-    df["variazioni"] = df.get("variazioni", "").astype(str).fillna("")
+    for c in _STATUS_TEXT_COLUMNS:
+        if c in df.columns:
+            df[c] = df[c].fillna("").astype(str).replace("nan", "")
+        else:
+            df[c] = ""
 
-    df["nome_partenza"] = df.get("nome_partenza", "").map(normalize_station_name)
-    df["nome_arrivo"] = df.get("nome_arrivo", "").map(normalize_station_name)
+    # Nomi stazione normalizzati: la mappa cache-ata evita di ripetere la
+    # normalizzazione regex su ogni riga quando lo stesso nome ricorre
+    # migliaia di volte nello stesso file.
+    df["nome_partenza"] = _normalize_names(df.get("nome_partenza", ""))
+    df["nome_arrivo"] = _normalize_names(df.get("nome_arrivo", ""))
 
     # Alcuni bronze (schema "treni") non forniscono codici stazione: deriviamo un codice
     # stabile dal nome per mantenere le aggregazioni station-level in gold/stations_dim.
     miss_dep = df["cod_partenza"].map(missing_station_code)
     miss_arr = df["cod_arrivo"].map(missing_station_code)
-    df.loc[miss_dep, "cod_partenza"] = df.loc[miss_dep, "nome_partenza"].map(code_from_station_name)
-    df.loc[miss_arr, "cod_arrivo"] = df.loc[miss_arr, "nome_arrivo"].map(code_from_station_name)
+    df.loc[miss_dep, "cod_partenza"] = _codes_from_names(df.loc[miss_dep, "nome_partenza"])
+    df.loc[miss_arr, "cod_arrivo"] = _codes_from_names(df.loc[miss_arr, "nome_arrivo"])
 
-    df["ritardo_partenza_min"] = df.get("ritardo_partenza_raw", "").map(safe_int)
-    df["ritardo_arrivo_min"] = df.get("ritardo_arrivo_raw", "").map(safe_int)
+    df["ritardo_partenza_min"] = safe_int_series(df.get("ritardo_partenza_raw", ""))
+    df["ritardo_arrivo_min"] = safe_int_series(df.get("ritardo_arrivo_raw", ""))
 
-    df["dt_partenza_prog"] = df["dt_partenza_prog_raw"].map(parse_dt_it)
-    df["dt_arrivo_prog"] = df["dt_arrivo_prog_raw"].map(parse_dt_it)
+    df["dt_partenza_prog"] = parse_dt_it_series(df["dt_partenza_prog_raw"])
+    df["dt_arrivo_prog"] = parse_dt_it_series(df["dt_arrivo_prog_raw"])
 
     df["data_riferimento"] = df["_reference_date"]
 
     df["missing_datetime"] = df["dt_partenza_prog"].isna() | df["dt_arrivo_prog"].isna()
     df["info_mancante"] = df["missing_datetime"]
 
-    stato_cfg = df.apply(se.classify, axis=1).astype("object")
-    stato_fb = _status_fallback_series(df)
-
-    stato = stato_cfg.copy()
-    strong_fb = stato_fb.isin(["cancellato", "soppresso"])
-    stato.loc[strong_fb] = stato_fb.loc[strong_fb]
-    weak_fb = (stato_fb == "parzialmente_cancellato") & (stato == "effettuato")
-    stato.loc[weak_fb] = stato_fb.loc[weak_fb]
-    stato = stato.fillna("effettuato")
-
-    df["stato_corsa"] = stato
+    # Una sola classificazione vettoriale sulle colonne canoniche. Prima
+    # convivevano due implementazioni: quella da config (che non trovava mai
+    # le colonne, perche' cercava le intestazioni maiuscole della sorgente) e
+    # un fallback hard-coded che sapeva riconoscere solo "cancellato" e
+    # "soppresso", per giunta leggendo le cancellazioni parziali come totali.
+    df["stato_corsa"] = se.classify_frame(df)
 
     df["_extracted_at_utc_ts"] = pd.to_datetime(df["_extracted_at_utc"], errors="coerce", utc=True)
 
@@ -284,7 +229,23 @@ def upsert_month_parquet(path: str, add_df: pd.DataFrame) -> None:
         add_df.to_parquet(path, index=False)
 
 
-def main(start: str, end: Optional[str] = None) -> None:
+def _transform_one(args: Tuple[Dict[str, Any], str, str]) -> Tuple[str, Optional[pd.DataFrame], str]:
+    """Worker entry point: read and transform a single bronze day."""
+    cfg, csv_gz, meta = args
+    try:
+        df_s = transform(cfg, read_bronze(csv_gz, meta))
+    except RuntimeError as exc:
+        return csv_gz, None, str(exc)
+    if df_s.empty:
+        return csv_gz, None, "no rows after normalization"
+    return csv_gz, df_s, ""
+
+
+def _default_jobs() -> int:
+    return max(1, (os.cpu_count() or 2) - 1)
+
+
+def main(start: str, end: Optional[str] = None, jobs: Optional[int] = None) -> None:
     cfg = load_yaml("config/pipeline.yml")
 
     d0 = date.fromisoformat(start)
@@ -295,37 +256,57 @@ def main(start: str, end: Optional[str] = None) -> None:
         print("no bronze files found for range")
         return
 
-    by_month: Dict[str, List[pd.DataFrame]] = {}
-    skipped: List[str] = []
+    # Days are independent of one another, and the legacy bronze layout costs
+    # ~4s per day just to ast.literal_eval a 12 MB Python-repr payload (its
+    # single quotes and embedded apostrophes rule out the faster json parser).
+    # A backfill over the full history is therefore worth spreading across
+    # cores; the nightly run has one day to do and stays single-process.
+    n_jobs = jobs if jobs is not None else _default_jobs()
+    n_jobs = max(1, min(n_jobs, len(files)))
+
+    # Group the day files by target month first, then process one month at a
+    # time and flush it before moving on. Holding every transformed day in a
+    # dict until the very end meant a full 26-month backfill kept ~6.5M rows
+    # of silver resident at once, which is more than a CI runner will give us.
+    files_by_month: Dict[str, List[Tuple[date, str, str]]] = {}
     for d, csv_gz, meta in files:
-        df_b = read_bronze(csv_gz, meta)
-        try:
-            df_s = transform(cfg, df_b)
-        except RuntimeError as exc:
-            skipped.append(f"{csv_gz}: {exc}")
-            continue
+        files_by_month.setdefault(f"{d.year:04d}{d.month:02d}", []).append((d, csv_gz, meta))
 
-        if df_s.empty:
-            skipped.append(f"{csv_gz}: no rows after normalization")
-            continue
+    skipped: List[str] = []
+    updated: List[str] = []
 
-        key = f"{d.year:04d}{d.month:02d}"
-        by_month.setdefault(key, []).append(df_s)
+    # One pool for the whole run, not one per month. Under macOS' spawn start
+    # method every worker re-imports pandas on creation, so rebuilding the pool
+    # for each of 26 months paid that startup cost 26 times over.
+    pool = ProcessPoolExecutor(max_workers=n_jobs) if n_jobs > 1 else None
 
-    if not by_month:
-        print({"silver_updated_months": [], "skipped_files": len(skipped)})
-        for msg in skipped[:20]:
-            print(f"WARN {msg}")
-        return
+    try:
+        for key in sorted(files_by_month):
+            tasks = [(cfg, csv_gz, meta) for _d, csv_gz, meta in files_by_month[key]]
+            parts: List[pd.DataFrame] = []
 
-    for key, parts in by_month.items():
-        y = int(key[:4])
-        m = int(key[4:])
-        p = silver_path_for_month(date(y, m, 1))
-        add_df = pd.concat(parts, ignore_index=True)
-        upsert_month_parquet(p, add_df)
+            results = pool.map(_transform_one, tasks) if (pool and len(tasks) > 1) else map(_transform_one, tasks)
+            for csv_gz, df_s, err in results:
+                if err:
+                    skipped.append(f"{csv_gz}: {err}")
+                else:
+                    parts.append(df_s)
 
-    print({"silver_updated_months": sorted(list(by_month.keys())), "skipped_files": len(skipped)})
+            if not parts:
+                continue
+
+            p = silver_path_for_month(date(int(key[:4]), int(key[4:]), 1))
+            add_df = pd.concat(parts, ignore_index=True)
+            del parts
+            upsert_month_parquet(p, add_df)
+            del add_df
+            updated.append(key)
+            print(f"  silver {key} scritto", flush=True)
+    finally:
+        if pool is not None:
+            pool.shutdown()
+
+    print({"silver_updated_months": updated, "skipped_files": len(skipped)})
     for msg in skipped[:20]:
         print(f"WARN {msg}")
 
@@ -336,5 +317,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", required=True, help="YYYY-MM-DD")
     ap.add_argument("--end", required=False, help="YYYY-MM-DD")
+    ap.add_argument("--jobs", type=int, default=None, help="Processi paralleli (default: core-1)")
     args = ap.parse_args()
-    main(args.start, args.end)
+    main(args.start, args.end, jobs=args.jobs)

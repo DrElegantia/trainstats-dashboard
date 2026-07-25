@@ -5,9 +5,15 @@ import os
 from datetime import date
 from typing import Any, Dict, List, Optional, Set
 
+import numpy as np
 import pandas as pd
 
-from .utils import bucketize_delay, ensure_dir, load_yaml, normalize_station_name
+from .utils import (
+    bucketize_delay_series,
+    ensure_dir,
+    load_yaml,
+    normalize_station_name,
+)
 
 
 _station_code_map_cache: Optional[Dict[str, str]] = None
@@ -36,12 +42,14 @@ def _build_station_code_map(df: Optional[pd.DataFrame] = None) -> Dict[str, str]
     dim_path = os.path.join("data", "gold", "stations_dim.csv")
     if os.path.exists(dim_path):
         try:
-            dim = pd.read_csv(dim_path)
-            for _, row in dim.iterrows():
-                code = str(row.get("cod_stazione", "")).strip()
-                name = str(row.get("nome_stazione", "")).strip()
-                if code and name:
-                    pairs[code] = normalize_station_name(name)
+            dim = pd.read_csv(dim_path, usecols=["cod_stazione", "nome_stazione"])
+            codes = dim["cod_stazione"].astype(str).str.strip()
+            names = dim["nome_stazione"].astype(str).str.strip()
+            keep = codes.ne("") & names.ne("")
+            # normalize_station_name runs once per distinct name rather than
+            # once per row (iterrows also boxed every row into a Series).
+            norm = {n: normalize_station_name(n) for n in names[keep].unique()}
+            pairs.update(zip(codes[keep], names[keep].map(norm)))
         except Exception:
             pass
 
@@ -51,11 +59,20 @@ def _build_station_code_map(df: Optional[pd.DataFrame] = None) -> Dict[str, str]
                                    ("cod_arrivo", "nome_arrivo")]:
             if col_code not in df.columns or col_name not in df.columns:
                 continue
-            sub = df[[col_code, col_name]].dropna(subset=[col_code])
-            for code, name in zip(sub[col_code].astype(str).str.strip(),
-                                  sub[col_name].astype(str).str.strip()):
+            # One row per distinct code instead of a Python loop over every
+            # observation: a three-month chunk holds ~750k rows but only a few
+            # thousand distinct codes.
+            sub = (
+                df[[col_code, col_name]]
+                .dropna(subset=[col_code])
+                .drop_duplicates(subset=[col_code])
+            )
+            codes = sub[col_code].astype(str).str.strip()
+            names = sub[col_name].astype(str).str.strip()
+            norm = {n: normalize_station_name(n) for n in names.unique()}
+            for code, name in zip(codes, names):
                 if code and code not in pairs:
-                    pairs[code] = normalize_station_name(name)
+                    pairs[code] = norm[name]
 
     # Group codes by normalized name
     name_to_codes: Dict[str, List[str]] = {}
@@ -86,22 +103,32 @@ def _apply_code_map(df: pd.DataFrame, code_map: Dict[str, str]) -> pd.DataFrame:
     df = df.copy()
     for col in ("cod_partenza", "cod_arrivo", "cod_stazione"):
         if col in df.columns:
-            df[col] = df[col].map(lambda c: code_map.get(c, c))
+            # Dict-based map is resolved in pandas' C layer; the previous
+            # lambda paid a Python call for every one of millions of rows.
+            df[col] = df[col].map(code_map).fillna(df[col])
     return df
 
 
 # Columns that are always summed when re-aggregating after code remapping.
 _SUM_COLS = frozenset([
-    "corse_osservate", "effettuate", "cancellate", "soppresse",
-    "parzialmente_cancellate", "cancellate_tot", "info_mancante",
-    "in_orario", "in_ritardo", "in_anticipo",
+    "corse_osservate", "corse_con_misura", "effettuate", "cancellate", "soppresse",
+    "parzialmente_cancellate", "cancellate_tot", "non_effettuate", "info_mancante",
+    "in_orario", "in_ritardo", "in_anticipo", "puntuali",
     "oltre_5", "oltre_10", "oltre_15", "oltre_30", "oltre_60",
     "minuti_ritardo_tot", "minuti_anticipo_tot", "minuti_netti_tot",
     "count", "minuti_ritardo", "minuti_anticipo",
 ])
 
-# Columns that need weighted-average (by corse_osservate) when re-aggregating.
-_WAVG_COLS = frozenset(["ritardo_medio", "ritardo_mediano", "p90", "p95"])
+# Columns that need weighted-average when re-aggregating. The weight is the
+# number of usable delay measurements, not the number of observed runs:
+# suppressed trains contribute to corse_osservate but carry no delay, so
+# weighting by corse_osservate would over-count routes with many cancellations.
+_WAVG_COLS = frozenset([
+    "ritardo_medio", "ritardo_mediano", "scostamento_medio",
+    "scostamento_mediano", "p90", "p95",
+])
+
+_WAVG_WEIGHT = "corse_con_misura"
 
 
 def _reaggregate_remapped(df: pd.DataFrame, key_cols: List[str]) -> pd.DataFrame:
@@ -117,7 +144,7 @@ def _reaggregate_remapped(df: pd.DataFrame, key_cols: List[str]) -> pd.DataFrame
 
     present_sum = [c for c in _SUM_COLS if c in df.columns]
     present_wavg = [c for c in _WAVG_COLS if c in df.columns]
-    weight = "corse_osservate"
+    weight = _WAVG_WEIGHT if _WAVG_WEIGHT in df.columns else "corse_osservate"
     has_weight = weight in df.columns and len(present_wavg) > 0
 
     agg_spec: Dict[str, Any] = {c: "sum" for c in present_sum}
@@ -257,31 +284,25 @@ def build_metrics(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     df["mese"] = to_month_key(df["dt_partenza_prog"])
     df["anno"] = df["dt_partenza_prog"].dt.year.astype("Int64")
 
-    # tipo_giorno: infrasettimanale (Mon-Fri) vs weekend (Sat-Sun)
+    # tipo_giorno: infrasettimanale (Mon-Fri) vs weekend (Sat-Sun).
+    # Both of these ran a Python lambda per row over millions of rows; the
+    # boolean mask and the bucketing below do the same work in numpy.
     dow = df["dt_partenza_prog"].dt.dayofweek  # 0=Mon, 6=Sun
-    df["tipo_giorno"] = dow.map(
-        lambda d: "weekend" if (pd.notna(d) and d >= 5) else "infrasettimanale"
-    )
+    df["tipo_giorno"] = np.where(dow.ge(5).fillna(False), "weekend", "infrasettimanale")
 
-    # fascia_oraria: time-of-day slot
+    # fascia_oraria: time-of-day slot. Rows with no departure timestamp keep
+    # falling back to "mattina", as before.
     hour = df["dt_partenza_prog"].dt.hour
-    df["fascia_oraria"] = hour.map(lambda h: _hour_to_fascia(h) if pd.notna(h) else "mattina")
+    fascia = pd.cut(
+        hour,
+        bins=[-1, 5, 8, 13, 17, 21, 23],
+        labels=["notte", "mattina", "tarda_mattina", "pomeriggio", "sera", "notte_tarda"],
+        ordered=False,
+    ).astype(object)
+    df["fascia_oraria"] = fascia.replace("notte_tarda", "notte").fillna("mattina")
 
     df["ritardo_partenza_min"] = pd.to_numeric(df["ritardo_partenza_min"], errors="coerce")
     df["ritardo_arrivo_min"] = pd.to_numeric(df["ritardo_arrivo_min"], errors="coerce")
-
-    df["has_delay_arrivo"] = df["ritardo_arrivo_min"].notna()
-    df["has_delay_partenza"] = df["ritardo_partenza_min"].notna()
-
-    df["arrivo_in_orario"] = (df["has_delay_arrivo"] & (df["ritardo_arrivo_min"] <= thr) & (df["ritardo_arrivo_min"] >= 0)).astype("int8")
-    df["arrivo_in_ritardo"] = (df["has_delay_arrivo"] & (df["ritardo_arrivo_min"] > thr)).astype("int8")
-    df["arrivo_in_anticipo"] = (df["has_delay_arrivo"] & (df["ritardo_arrivo_min"] < 0)).astype("int8")
-
-    df["oltre_5"] = (df["has_delay_arrivo"] & (df["ritardo_arrivo_min"] >= 5)).astype("int8")
-    df["oltre_10"] = (df["has_delay_arrivo"] & (df["ritardo_arrivo_min"] >= 10)).astype("int8")
-    df["oltre_15"] = (df["has_delay_arrivo"] & (df["ritardo_arrivo_min"] >= 15)).astype("int8")
-    df["oltre_30"] = (df["has_delay_arrivo"] & (df["ritardo_arrivo_min"] >= 30)).astype("int8")
-    df["oltre_60"] = (df["has_delay_arrivo"] & (df["ritardo_arrivo_min"] >= 60)).astype("int8")
 
     # Pre-compute stato_corsa flags as int for fast native aggregation
     stato = df["stato_corsa"].astype(str).str.strip()
@@ -291,31 +312,68 @@ def build_metrics(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     df["is_parz_cancellato"] = (stato == "parzialmente_cancellato").astype("int8")
     df["info_mancante_int"] = df["info_mancante"].fillna(False).astype(bool).astype("int8")
 
-    df["minuti_ritardo"] = df["ritardo_arrivo_min"].clip(lower=0)
-    df["minuti_anticipo"] = (-df["ritardo_arrivo_min"]).clip(lower=0)
+    # --- Which arrival-delay measurements may be used at all --------------
+    #
+    # Two filters, both previously absent.
+    #
+    # 1. A train that never ran is published with ritardo = 0. That zero was
+    #    counted as a punctual arrival, so suppressed trains both inflated
+    #    punctuality and pulled the average delay toward zero.
+    # 2. The feed occasionally emits physically impossible values. Rare in
+    #    aggregate, decisive on routes with few runs: the -85 minute "average
+    #    delay" on BOLOGNA CABINA S.DONATO -> RIMINI came from one such record.
+    delay_states = set(cfg.get("delay_states", ["effettuato", "parzialmente_cancellato"]))
+    ran = stato.isin(delay_states)
+
+    validity = cfg.get("delay_validity", {})
+    lo = float(validity.get("min_minutes", -90))
+    hi = float(validity.get("max_minutes", 1440))
+    in_range = df["ritardo_arrivo_min"].between(lo, hi)
+
+    valid = df["ritardo_arrivo_min"].notna() & ran & in_range
+    df["delay_valido"] = valid.astype("int8")
+
+    # Signed deviation from timetable, defined only where usable.
+    df["scostamento_min"] = df["ritardo_arrivo_min"].where(valid)
+
+    # Official delay: an early arrival is not a negative delay, it is zero
+    # delay. Keeping the sign is what produced whole routes with a negative
+    # "ritardo medio". The signed series survives as scostamento_min.
+    df["ritardo_min"] = df["scostamento_min"].clip(lower=0)
+
+    df["has_delay_arrivo"] = valid
+    df["has_delay_partenza"] = df["ritardo_partenza_min"].notna()
+
+    dev = df["scostamento_min"]
+    df["arrivo_in_orario"] = (valid & (dev >= 0) & (dev <= thr)).astype("int8")
+    df["arrivo_in_ritardo"] = (valid & (dev > thr)).astype("int8")
+    df["arrivo_in_anticipo"] = (valid & (dev < 0)).astype("int8")
+
+    # Punctuality in the regulatory sense: arriving early counts as on time.
+    # The three buckets above stay mutually exclusive for the histogram, so
+    # this ships as its own column rather than being folded into in_orario.
+    df["arrivo_puntuale"] = (valid & (dev <= thr)).astype("int8")
+
+    for k in (5, 10, 15, 30, 60):
+        df[f"oltre_{k}"] = (valid & (dev >= k)).astype("int8")
+
+    df["minuti_ritardo"] = df["ritardo_min"]
+    df["minuti_anticipo"] = (-dev).clip(lower=0)
     df["minuti_netti"] = df["minuti_ritardo"].fillna(0) - df["minuti_anticipo"].fillna(0)
 
     edges = cfg["delay_buckets_minutes"]["edges"]
     labels = cfg["delay_buckets_minutes"]["labels"]
-
-    def buck(x):
-        if pd.isna(x):
-            return "missing"
-        try:
-            return bucketize_delay(int(x), edges, labels)
-        except Exception:
-            return "missing"
-
-    df["bucket_ritardo_arrivo"] = df["ritardo_arrivo_min"].apply(buck)
+    df["bucket_ritardo_arrivo"] = bucketize_delay_series(dev, edges, labels)
 
     return df
 
 
 def agg_core(group_cols: List[str], df: pd.DataFrame) -> pd.DataFrame:
-    g = df.groupby(group_cols, dropna=False)
+    g = df.groupby(group_cols, dropna=False, observed=True)
 
-    out = g.agg(
+    agg = g.agg(
         corse_osservate=("_obs_id", "count"),
+        corse_con_misura=("delay_valido", "sum"),
         effettuate=("is_effettuato", "sum"),
         cancellate=("is_cancellato", "sum"),
         soppresse=("is_soppresso", "sum"),
@@ -324,6 +382,7 @@ def agg_core(group_cols: List[str], df: pd.DataFrame) -> pd.DataFrame:
         in_orario=("arrivo_in_orario", "sum"),
         in_ritardo=("arrivo_in_ritardo", "sum"),
         in_anticipo=("arrivo_in_anticipo", "sum"),
+        puntuali=("arrivo_puntuale", "sum"),
         oltre_5=("oltre_5", "sum"),
         oltre_10=("oltre_10", "sum"),
         oltre_15=("oltre_15", "sum"),
@@ -332,56 +391,72 @@ def agg_core(group_cols: List[str], df: pd.DataFrame) -> pd.DataFrame:
         minuti_ritardo_tot=("minuti_ritardo", "sum"),
         minuti_anticipo_tot=("minuti_anticipo", "sum"),
         minuti_netti_tot=("minuti_netti", "sum"),
-        ritardo_medio=("ritardo_arrivo_min", "mean"),
-        ritardo_mediano=("ritardo_arrivo_min", "median"),
-    ).reset_index()
+        # ritardo_medio is the mean of the floored series, so it can never go
+        # below zero. scostamento_medio keeps the signed reading for anyone
+        # who needs to see how far ahead of timetable a route runs.
+        ritardo_medio=("ritardo_min", "mean"),
+        ritardo_mediano=("ritardo_min", "median"),
+        scostamento_medio=("scostamento_min", "mean"),
+        scostamento_mediano=("scostamento_min", "median"),
+    )
 
-    # Compute quantiles via native groupby().quantile() — much faster than lambdas
-    delay_g = df.groupby(group_cols, dropna=False)["ritardo_arrivo_min"]
-    out["p90"] = delay_g.quantile(0.9).values
-    out["p95"] = delay_g.quantile(0.95).values
+    # Percentiles need a second pass. It is taken from the same grouper `g` and
+    # joined on the group index, so the two frames align by label. The previous
+    # version built a *second* groupby and assigned `.values` positionally,
+    # which silently hands one station another station's p95 the moment the two
+    # passes disagree on ordering. Joining on the index also keeps NaN group
+    # keys aligned, which a column merge would drop (categoria is genuinely
+    # NaN for part of the history).
+    q = g["ritardo_min"].quantile([0.9, 0.95]).unstack()
+    q.columns = ["p90", "p95"]
+    out = agg.join(q).reset_index()
 
-    out["cancellate_tot"] = out["cancellate"].fillna(0).astype(int) + out["parzialmente_cancellate"].fillna(0).astype(int)
+    # Runs that did not happen at all. cancellate_tot keeps its historical
+    # meaning (full + partial) for the dashboard, while non_effettuate is the
+    # honest "the train never ran" count, which previously left out soppresse
+    # entirely even though suppression is the dominant form in this feed.
+    out["non_effettuate"] = out["cancellate"].fillna(0).astype(int) + out["soppresse"].fillna(0).astype(int)
+    out["cancellate_tot"] = out["non_effettuate"] + out["parzialmente_cancellate"].fillna(0).astype(int)
 
     return out
 
 
-def _nodo_from_ruolo(ruolo_df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
-    """Aggregate partenza+arrivo rows into a single 'nodo' view."""
-    nodo_group = [c for c in group_cols if c != "ruolo"]
-    comb = ruolo_df.groupby(nodo_group, dropna=False).agg(
-        corse_osservate=("corse_osservate", "sum"),
-        effettuate=("effettuate", "sum"),
-        cancellate=("cancellate", "sum"),
-        soppresse=("soppresse", "sum"),
-        parzialmente_cancellate=("parzialmente_cancellate", "sum"),
-        cancellate_tot=("cancellate_tot", "sum"),
-        info_mancante=("info_mancante", "sum"),
-        in_orario=("in_orario", "sum"),
-        in_ritardo=("in_ritardo", "sum"),
-        in_anticipo=("in_anticipo", "sum"),
-        oltre_5=("oltre_5", "sum"),
-        oltre_10=("oltre_10", "sum"),
-        oltre_15=("oltre_15", "sum"),
-        oltre_30=("oltre_30", "sum"),
-        oltre_60=("oltre_60", "sum"),
-        minuti_ritardo_tot=("minuti_ritardo_tot", "sum"),
-        minuti_anticipo_tot=("minuti_anticipo_tot", "sum"),
-        minuti_netti_tot=("minuti_netti_tot", "sum"),
-        ritardo_medio=("ritardo_medio", "mean"),
-        ritardo_mediano=("ritardo_mediano", "median"),
-        p90=("p90", "mean"),
-        p95=("p95", "mean"),
-    ).reset_index()
-    comb["ruolo"] = "nodo"
+def _station_source(df: pd.DataFrame) -> pd.DataFrame:
+    """Long-format view where each run appears once per endpoint it touches.
 
-    name_map = (
-        ruolo_df.dropna(subset=["cod_stazione"])
+    Building the station tables from this frame lets every station metric —
+    role-level and node-level alike — come straight out of agg_core over the
+    underlying observations.
+
+    The node view used to be folded up from the already-aggregated role rows
+    with mean-of-means for ritardo_medio, median-of-medians for the median and
+    mean-of-p90s for the percentiles. None of those recover the true statistic:
+    the unweighted mean let a station with 3 departures count as much as the
+    same station's 900 arrivals, and a median of two medians is not a median
+    of anything. Aggregating from the observations removes the problem instead
+    of trying to correct for it.
+    """
+    dep = df.copy()
+    dep["cod_stazione"] = dep["cod_partenza"]
+    dep["nome_stazione"] = dep["nome_partenza"]
+    dep["ruolo"] = "partenza"
+
+    arr = df.copy()
+    arr["cod_stazione"] = arr["cod_arrivo"]
+    arr["nome_stazione"] = arr["nome_arrivo"]
+    arr["ruolo"] = "arrivo"
+
+    return pd.concat([dep, arr], ignore_index=True, copy=False)
+
+
+def _attach_station_names(out: pd.DataFrame, src: pd.DataFrame) -> pd.DataFrame:
+    names = (
+        src.dropna(subset=["cod_stazione"])
         .drop_duplicates("cod_stazione")
         .set_index("cod_stazione")["nome_stazione"]
     )
-    comb["nome_stazione"] = comb["cod_stazione"].map(name_map).fillna("")
-    return comb
+    out["nome_stazione"] = out["cod_stazione"].map(names).fillna("")
+    return out
 
 
 def build_gold(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
@@ -414,16 +489,11 @@ def build_gold(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, pd.DataFrame]
     ).reset_index()
     out["hist_dettaglio_categoria"] = h_det
 
-    # --- Station-level histogram: departure and arrival perspectives ---
-    dep_hist = df.copy()
-    dep_hist["cod_stazione"] = dep_hist["cod_partenza"]
-    dep_hist["ruolo"] = "partenza"
-
-    arr_hist = df.copy()
-    arr_hist["cod_stazione"] = arr_hist["cod_arrivo"]
-    arr_hist["ruolo"] = "arrivo"
-
-    hist_station_src = pd.concat([dep_hist, arr_hist], ignore_index=True)
+    # --- Station-level tables: one long frame shared by histogram and KPI ---
+    # Previously the histogram built its own concat of two full copies and the
+    # KPI tables built two more renamed views, so the frame was materialised
+    # four times over. One shared frame does both.
+    hist_station_src = _station_source(df)
 
     h_st_m = hist_station_src.groupby(
         ["mese", "categoria", "cod_stazione", "ruolo", "bucket_ritardo_arrivo"],
@@ -460,42 +530,24 @@ def build_gold(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, pd.DataFrame]
     out["od_dettaglio_categoria"] = od_det
 
     # --- Station KPI tables ---
-    dep_src = df.rename(columns={"cod_partenza": "cod_stazione"})
-    arr_src = df.rename(columns={"cod_arrivo": "cod_stazione"})
+    # Role and node views are both aggregated from the observations, so the
+    # node figures are true statistics rather than averages of averages.
+    m_group = ["mese", "categoria", "cod_stazione"]
+    det_group = ["mese", "tipo_giorno", "fascia_oraria", "categoria", "cod_stazione"]
 
-    # Monthly station ruolo
-    dep_m = agg_core(["mese", "categoria", "cod_stazione"], dep_src)
-    dep_m["ruolo"] = "partenza"
-    dep_m["nome_stazione"] = dep_m["cod_stazione"].map(part_names).fillna("")
+    staz_m_ruolo = agg_core(m_group + ["ruolo"], hist_station_src)
+    out["stazioni_mese_categoria_ruolo"] = _attach_station_names(staz_m_ruolo, hist_station_src)
 
-    arr_m = agg_core(["mese", "categoria", "cod_stazione"], arr_src)
-    arr_m["ruolo"] = "arrivo"
-    arr_m["nome_stazione"] = arr_m["cod_stazione"].map(arr_names).fillna("")
+    staz_m_nodo = agg_core(m_group, hist_station_src)
+    staz_m_nodo["ruolo"] = "nodo"
+    out["stazioni_mese_categoria_nodo"] = _attach_station_names(staz_m_nodo, hist_station_src)
 
-    staz_m_ruolo = pd.concat([dep_m, arr_m], ignore_index=True)
-    out["stazioni_mese_categoria_ruolo"] = staz_m_ruolo
+    staz_det_ruolo = agg_core(det_group + ["ruolo"], hist_station_src)
+    out["stazioni_dettaglio_categoria_ruolo"] = _attach_station_names(staz_det_ruolo, hist_station_src)
 
-    # Monthly station nodo
-    out["stazioni_mese_categoria_nodo"] = _nodo_from_ruolo(
-        staz_m_ruolo, ["mese", "categoria", "cod_stazione", "ruolo"]
-    )
-
-    # Dettaglio station ruolo
-    dep_det = agg_core(["mese", "tipo_giorno", "fascia_oraria", "categoria", "cod_stazione"], dep_src)
-    dep_det["ruolo"] = "partenza"
-    dep_det["nome_stazione"] = dep_det["cod_stazione"].map(part_names).fillna("")
-
-    arr_det = agg_core(["mese", "tipo_giorno", "fascia_oraria", "categoria", "cod_stazione"], arr_src)
-    arr_det["ruolo"] = "arrivo"
-    arr_det["nome_stazione"] = arr_det["cod_stazione"].map(arr_names).fillna("")
-
-    staz_det_ruolo = pd.concat([dep_det, arr_det], ignore_index=True)
-    out["stazioni_dettaglio_categoria_ruolo"] = staz_det_ruolo
-
-    # Dettaglio station nodo
-    out["stazioni_dettaglio_categoria_nodo"] = _nodo_from_ruolo(
-        staz_det_ruolo, ["mese", "tipo_giorno", "fascia_oraria", "categoria", "cod_stazione", "ruolo"]
-    )
+    staz_det_nodo = agg_core(det_group, hist_station_src)
+    staz_det_nodo["ruolo"] = "nodo"
+    out["stazioni_dettaglio_categoria_nodo"] = _attach_station_names(staz_det_nodo, hist_station_src)
 
     return out
 
@@ -519,45 +571,120 @@ def gold_keys() -> Dict[str, List[str]]:
     }
 
 
-def save_gold_tables(tables: Dict[str, pd.DataFrame]) -> None:
-    out_dir = os.path.join("data", "gold")
-    ensure_dir(out_dir)
+GOLD_DIR = os.path.join("data", "gold")
+PARTS_DIR = os.path.join(GOLD_DIR, "parts")
 
+
+def partition_path(name: str, mese: str) -> str:
+    return os.path.join(PARTS_DIR, name, f"{mese}.parquet")
+
+
+def _partition_months(name: str) -> List[str]:
+    d = os.path.join(PARTS_DIR, name)
+    if not os.path.isdir(d):
+        return []
+    return sorted(f[:-8] for f in os.listdir(d) if f.endswith(".parquet"))
+
+
+def migrate_csv_to_partitions(name: str) -> bool:
+    """Seed month partitions from a legacy monolithic gold CSV, once.
+
+    Lets an existing checkout switch to partitioned storage without a full
+    rebuild from bronze.
+    """
+    csv_path = os.path.join(GOLD_DIR, f"{name}.csv")
+    if _partition_months(name) or not os.path.exists(csv_path):
+        return False
+
+    try:
+        df_old = pd.read_csv(csv_path)
+    except Exception as e:
+        print(f"  WARNING: could not read legacy {name}.csv ({e})")
+        return False
+
+    first_col = str(df_old.columns[0]) if len(df_old.columns) else ""
+    if "git-lfs" in first_col:
+        print(f"  WARNING: {name}.csv is an LFS pointer, not data — skipping migration")
+        return False
+    if "mese" not in df_old.columns:
+        return False
+
+    ensure_dir(os.path.join(PARTS_DIR, name))
+    for mese, part in df_old.groupby("mese", dropna=False):
+        part.to_parquet(partition_path(name, str(mese)), index=False)
+    print(f"  migrated {name}.csv -> {df_old['mese'].nunique()} month partitions")
+    return True
+
+
+def save_gold_tables(tables: Dict[str, pd.DataFrame]) -> None:
+    """Merge each table's new rows into per-month parquet partitions.
+
+    The previous version kept every gold table as one monolithic CSV and, for
+    each processed chunk, re-read that whole CSV, concatenated, de-duplicated
+    and wrote all of it back. With the largest table at 77 MB and a full
+    rebuild running nine chunks, that alone moved well over a gigabyte of CSV
+    through the parser for data that had not changed. The nightly run paid the
+    same cost to append a single day.
+
+    Partitioning by month makes both cases proportional to what actually
+    changed: the nightly run touches one month's partition, a backfill touches
+    only the months it rebuilt. It also stops the repository from storing a
+    fresh 77 MB blob every night, which is what grew the git history to 6.5 GB.
+    """
     keys = gold_keys()
     code_map = _build_station_code_map()
 
     for name, df_new in tables.items():
-        path = os.path.join(out_dir, f"{name}.csv")
         k = keys.get(name)
+        if not k:
+            continue
+        miss = [c for c in k if c not in df_new.columns]
+        if miss:
+            raise RuntimeError(f"gold table {name} missing key columns {miss}")
 
-        if os.path.exists(path):
-            try:
-                df_old = pd.read_csv(path)
-                first_col = str(df_old.columns[0]) if len(df_old.columns) > 0 else ""
-                if "git-lfs" in first_col:
-                    print(f"  WARNING: {name}.csv is corrupted (LFS pointer as CSV header) — discarding stale data")
-                    merged = df_new.copy()
-                else:
-                    # Unify station codes in old data before merging
-                    df_old = _apply_code_map(df_old, code_map)
-                    # Re-aggregate old rows whose keys collapsed after remapping
-                    # (e.g. transition month Dec 2025 had both N_ and S_ codes)
-                    if k:
-                        df_old = _reaggregate_remapped(df_old, k)
-                    merged = pd.concat([df_old, df_new], ignore_index=True)
-            except Exception as e:
-                print(f"  WARNING: could not read {name}.csv ({e}) — starting fresh")
-                merged = df_new.copy()
-        else:
-            merged = df_new.copy()
+        migrate_csv_to_partitions(name)
+        ensure_dir(os.path.join(PARTS_DIR, name))
 
-        if k:
-            miss = [c for c in k if c not in merged.columns]
-            if miss:
-                raise RuntimeError(f"gold table {name} missing key columns {miss}")
+        for mese, part_new in df_new.groupby("mese", dropna=False):
+            path = partition_path(name, str(mese))
+            merged = part_new
+
+            if os.path.exists(path):
+                try:
+                    part_old = pd.read_parquet(path)
+                    # Unify station codes in old data before merging, then
+                    # re-aggregate rows whose keys collapsed after remapping
+                    # (the Dec 2025 transition carried both N_ and S_ codes).
+                    part_old = _apply_code_map(part_old, code_map)
+                    part_old = _reaggregate_remapped(part_old, k)
+                    merged = pd.concat([part_old, part_new], ignore_index=True)
+                except Exception as e:
+                    print(f"  WARNING: could not read partition {path} ({e}) — rebuilding it")
+
             merged = merged.drop_duplicates(subset=k, keep="last").sort_values(k)
+            merged.to_parquet(path, index=False)
 
-        merged.to_csv(path, index=False)
+
+def read_gold_table(name: str) -> pd.DataFrame:
+    """Reassemble a full gold table from its month partitions."""
+    months = _partition_months(name)
+    if not months:
+        csv_path = os.path.join(GOLD_DIR, f"{name}.csv")
+        return pd.read_csv(csv_path) if os.path.exists(csv_path) else pd.DataFrame()
+
+    parts = [pd.read_parquet(partition_path(name, m)) for m in months]
+    return pd.concat(parts, ignore_index=True)
+
+
+def gold_table_names() -> List[str]:
+    if os.path.isdir(PARTS_DIR):
+        names = sorted(
+            d for d in os.listdir(PARTS_DIR)
+            if os.path.isdir(os.path.join(PARTS_DIR, d))
+        )
+        if names:
+            return names
+    return sorted(gold_keys().keys())
 
 
 def _month_keys_between(d0: date, d1: date) -> List[str]:

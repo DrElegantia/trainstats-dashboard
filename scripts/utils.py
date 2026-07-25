@@ -191,6 +191,65 @@ def parse_dt_it(x: Any) -> Optional[pd.Timestamp]:
         return None
 
 
+_NULLISH = {"", "nan", "none", "null", "nat", "<na>"}
+
+# Layout emitted by the source for both bronze schemas ("24/07/2026 15:14").
+_IT_DT_FORMAT = "%d/%m/%Y %H:%M"
+
+
+def _blank_mask(s: pd.Series) -> pd.Series:
+    """True where the string cell carries no usable value."""
+    return s.isna() | s.str.strip().str.lower().isin(_NULLISH)
+
+
+def parse_dt_it_series(values: pd.Series) -> pd.Series:
+    """Vectorized counterpart of parse_dt_it.
+
+    parse_dt_it called pd.to_datetime() once per cell, and each call re-ran
+    pandas' format inference on a one-element array. On a single month of
+    bronze that accounted for ~85% of the silver build time. Here the whole
+    column is parsed with an explicit format, and only the cells that fail
+    fall back to the (slow) inferring parser.
+    """
+    s = values.astype(str)
+    blank = _blank_mask(s)
+    s = s.str.strip()
+
+    out = pd.to_datetime(s.where(~blank), format=_IT_DT_FORMAT, errors="coerce")
+
+    retry = out.isna() & ~blank
+    if retry.any():
+        out.loc[retry] = pd.to_datetime(s[retry], dayfirst=True, errors="coerce")
+
+    return out
+
+
+def safe_int_series(values: pd.Series) -> pd.Series:
+    """Vectorized counterpart of safe_int, returning a nullable Int64 column.
+
+    The source encodes "no measurement" both as an empty cell and as the
+    letter codes N / S / X, which must stay missing rather than collapse to 0.
+    """
+    s = values.astype(str).str.strip()
+    num = pd.to_numeric(s.where(~_blank_mask(values)), errors="coerce")
+    return num.round().astype("Int64")
+
+
+def bucketize_delay_series(
+    values: pd.Series, edges: List[int], labels: List[str]
+) -> pd.Series:
+    """Vectorized delay bucketing, left-open/right-closed like the scalar version.
+
+    The scalar bucketize_delay() truncated through int(), which rounds toward
+    zero and therefore moved negative fractional delays into the wrong bucket
+    (-0.5 became 0, landing in "(-1,0]" instead of "(-1,0]"'s neighbour).
+    Working on the numeric column directly avoids the cast entirely.
+    """
+    num = pd.to_numeric(values, errors="coerce")
+    out = pd.cut(num, bins=edges, labels=labels, right=True, ordered=False)
+    return out.astype(object).where(out.notna(), "missing")
+
+
 def compute_unique_key(row: pd.Series) -> str:
     parts = [
         str(row.get("Categoria", "")).strip(),
@@ -201,6 +260,14 @@ def compute_unique_key(row: pd.Series) -> str:
         str(row.get("Ora arrivo programmata", "")).strip(),
     ]
     return sha1_hex("|".join(parts))
+
+
+def _any_pattern(hay: pd.Series, patterns: List[re.Pattern]) -> pd.Series:
+    """Vectorized 'does any of these regexes match' over a string column."""
+    hit = pd.Series(False, index=hay.index)
+    for rx in patterns:
+        hit |= hay.str.contains(rx, na=False)
+    return hit
 
 
 @dataclass
@@ -223,6 +290,47 @@ class StatusEngine:
         suppressed = comp_list(p["suppressed"]["any"])
         partial = comp_list(p["partial_cancelled"]["any"])
         return StatusEngine(cancelled, suppressed, partial, tf)
+
+    def haystack(self, df: pd.DataFrame) -> pd.Series:
+        """Join the configured text fields into one searchable column.
+
+        Fields absent from the frame are skipped instead of silently
+        contributing an empty string: text_fields is configured with the
+        canonical (post-rename) column names, and a mismatch there used to
+        make every classification fall through to "effettuato".
+        """
+        present = [f for f in self.text_fields if f in df.columns]
+        if not present:
+            raise KeyError(
+                "status_rules.text_fields matches no column in the silver frame. "
+                f"configured={self.text_fields} available={list(df.columns)}"
+            )
+
+        parts = [df[f].fillna("").astype(str) for f in present]
+        hay = parts[0]
+        for p in parts[1:]:
+            hay = hay.str.cat(p, sep=" | ")
+        return hay
+
+    def classify_frame(self, df: pd.DataFrame) -> pd.Series:
+        """Vectorized classification over the whole frame.
+
+        Precedence matters: a "Treno cancellato da X a Y" note describes a
+        train that ran on a shortened route, so it must be read as a partial
+        cancellation before the generic "cancellato" pattern claims it as a
+        full one.
+        """
+        hay = self.haystack(df)
+
+        is_suppressed = _any_pattern(hay, self.suppressed_any)
+        is_partial = _any_pattern(hay, self.partial_any)
+        is_cancelled = _any_pattern(hay, self.cancelled_any)
+
+        out = pd.Series("effettuato", index=df.index, dtype=object)
+        out[is_cancelled & ~is_partial] = "cancellato"
+        out[is_partial & ~is_suppressed] = "parzialmente_cancellato"
+        out[is_suppressed] = "soppresso"
+        return out
 
     def classify(self, row: pd.Series) -> str:
         texts: List[str] = []

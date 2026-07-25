@@ -487,50 +487,14 @@ function buildStationItems(codes) {
 }
 
 /**
- * Enrich stationsRef with code→name mappings extracted from loaded fact tables.
- * This fixes the problem where station codes change over time (e.g. N_xxx → S0xxxx)
- * and the newer code is missing from stations_dim.csv.
- * For unknown codes, we look up the name from fact rows and inherit coordinates
- * from an existing entry with the same normalized name.
+ * Register code→name pairs stations_dim.csv does not know about, letting each
+ * new code inherit coordinates from an existing entry with the same normalized
+ * name. Station codes change over time (N_ACF3D2764DA3 → S01700 for Milano
+ * Centrale) and the newer code is often missing from stations_dim.csv.
  */
-function enrichStationsRefFromFacts() {
-  // Collect code→name pairs from all loaded datasets
-  const codeNamePairs = [];
+function mergeStationNames(codeNamePairs) {
+  if (!codeNamePairs || !codeNamePairs.length) return 0;
 
-  for (const r of (state.data.stationsMonthNode || [])) {
-    const code = String(r.cod_stazione || "").trim();
-    const name = String(r.nome_stazione || "").trim();
-    if (code && name) codeNamePairs.push([code, name]);
-  }
-  for (const r of (state.data.stationsDetailNode || [])) {
-    const code = String(r.cod_stazione || "").trim();
-    const name = String(r.nome_stazione || "").trim();
-    if (code && name) codeNamePairs.push([code, name]);
-  }
-  for (const r of (state.data.odMonthCat || [])) {
-    const cp = String(r.cod_partenza || "").trim();
-    const np = String(r.nome_partenza || "").trim();
-    if (cp && np) codeNamePairs.push([cp, np]);
-    const ca = String(r.cod_arrivo || "").trim();
-    const na = String(r.nome_arrivo || "").trim();
-    if (ca && na) codeNamePairs.push([ca, na]);
-  }
-  for (const r of (state.data.odDetailCat || [])) {
-    const cp = String(r.cod_partenza || "").trim();
-    const np = String(r.nome_partenza || "").trim();
-    if (cp && np) codeNamePairs.push([cp, np]);
-    const ca = String(r.cod_arrivo || "").trim();
-    const na = String(r.nome_arrivo || "").trim();
-    if (ca && na) codeNamePairs.push([ca, na]);
-  }
-  for (const r of (state.data.histStationsMonthRuolo || [])) {
-    const code = String(r.cod_stazione || "").trim();
-    const name = String(r.nome_stazione || "").trim();
-    if (code && name) codeNamePairs.push([code, name]);
-  }
-
-  // Build a name→coords lookup from existing stationsRef entries
-  // Use normalizeStationName to handle Trenord/RFI naming differences
   const nameToCoords = new Map();
   for (const [, ref] of state.stationsRef) {
     if (!ref.name) continue;
@@ -541,12 +505,10 @@ function enrichStationsRefFromFacts() {
     }
   }
 
-  // Add missing codes to stationsRef, inheriting coords from same-name entries
-  let enriched = 0;
+  let added = 0;
   for (const [code, name] of codeNamePairs) {
-    if (state.stationsRef.has(code)) continue;
-    const key = normalizeText(normalizeStationName(name));
-    const coords = nameToCoords.get(key);
+    if (!code || !name || state.stationsRef.has(code)) continue;
+    const coords = nameToCoords.get(normalizeText(normalizeStationName(name)));
     state.stationsRef.set(code, {
       code,
       name,
@@ -554,10 +516,40 @@ function enrichStationsRefFromFacts() {
       lon: coords ? coords.lon : NaN,
       city: coords ? coords.city : ""
     });
-    enriched++;
+    added++;
+  }
+  return added;
+}
+
+/**
+ * Fallback for data deployments that still carry per-row station names.
+ *
+ * The fact tables no longer ship nome_partenza / nome_arrivo / nome_stazione:
+ * those columns repeated the same few thousand strings across millions of rows
+ * and accounted for most of the bytes the browser had to download and parse.
+ * Names now arrive once, via station_names.csv. This stays so the dashboard
+ * keeps working against an older deployment of the data.
+ */
+function enrichStationsRefFromFacts() {
+  const pairs = [];
+  const push = (code, name) => {
+    const c = String(code || "").trim();
+    const n = String(name || "").trim();
+    if (c && n) pairs.push([c, n]);
+  };
+
+  for (const key of ["stationsMonthNode", "stationsDetailNode", "histStationsMonthRuolo"]) {
+    for (const r of (state.data[key] || [])) push(r.cod_stazione, r.nome_stazione);
+  }
+  for (const key of ["odMonthCat", "odDetailCat"]) {
+    for (const r of (state.data[key] || [])) {
+      push(r.cod_partenza, r.nome_partenza);
+      push(r.cod_arrivo, r.nome_arrivo);
+    }
   }
 
-  if (enriched > 0) console.log("enrichStationsRefFromFacts: added " + enriched + " codes from fact tables");
+  const added = mergeStationNames(pairs);
+  if (added > 0) console.log("enrichStationsRefFromFacts: added " + added + " codes from fact tables");
 }
 
 /* Map: station name (normalized) -> array of all codes sharing that name */
@@ -1164,14 +1156,32 @@ function metricLabel() {
   return "% in ritardo";
 }
 
-function computeValue(corse, ritardo, minuti, sopp, canc) {
+/**
+ * Runs whose arrival delay was actually measured.
+ *
+ * "% in ritardo" divides the late count by this, not by corse_osservate: a
+ * suppressed train is observed but has no arrival to be late for, so leaving
+ * it in the denominator quietly reports a route as more punctual the more
+ * often it gets cancelled. Falls back to corse_osservate against older data
+ * that predates the column.
+ */
+function measuredRuns(r) {
+  const m = toNum(r.corse_con_misura);
+  if (m > 0) return m;
+  return (r.corse_con_misura === undefined || r.corse_con_misura === "")
+    ? toNum(r.corse_osservate)
+    : 0;
+}
+
+function computeValue(corse, ritardo, minuti, sopp, canc, misurate) {
   const mode = getMetricMode();
   if (mode === "count_late") return ritardo;
   if (mode === "count_total") return corse;
   if (mode === "minutes") return minuti;
   if (mode === "suppressed") return sopp || 0;
   if (mode === "cancelled") return canc || 0;
-  return corse > 0 ? (ritardo / corse) * 100 : 0;
+  const den = (misurate === undefined || misurate === null) ? corse : misurate;
+  return den > 0 ? (ritardo / den) * 100 : 0;
 }
 
 function isCardCollapsed(el) {
@@ -1250,9 +1260,10 @@ function aggregateByMonth(rows) {
   for (const r of rows) {
     const m = String(r.mese || "").slice(0, 7);
     if (!m) continue;
-    if (!by.has(m)) by.set(m, { key: m, corse: 0, rit: 0, min: 0, sopp: 0, canc: 0 });
+    if (!by.has(m)) by.set(m, { key: m, corse: 0, mis: 0, rit: 0, min: 0, sopp: 0, canc: 0 });
     const o = by.get(m);
     o.corse += toNum(r.corse_osservate);
+    o.mis   += measuredRuns(r);
     o.rit   += toNum(r.in_ritardo);
     o.min   += toNum(r.minuti_ritardo_tot);
     o.sopp  += toNum(r.soppresse);
@@ -1302,7 +1313,7 @@ function seriesMonthly() {
   const out = aggregateByMonth(rows);
   return {
     x: out.map((o) => fmtMonthShort(o.key)),
-    y: out.map((o) => computeValue(o.corse, o.rit, o.min, o.sopp, o.canc))
+    y: out.map((o) => computeValue(o.corse, o.rit, o.min, o.sopp, o.canc, o.mis))
   };
 }
 
@@ -1527,10 +1538,11 @@ function renderStationsTop10() {
     if (!cityKey) continue;  // skip non-capoluogo stations
 
     if (!agg.has(cityKey)) {
-      agg.set(cityKey, { nome: prettyCityName(cityKey, city), corse_osservate:0, in_ritardo:0, minuti_ritardo_tot:0, cancellate_tot:0, soppresse:0 });
+      agg.set(cityKey, { nome: prettyCityName(cityKey, city), corse_osservate:0, corse_con_misura:0, in_ritardo:0, minuti_ritardo_tot:0, cancellate_tot:0, soppresse:0 });
     }
     const a = agg.get(cityKey);
     a.corse_osservate += toNum(r.corse_osservate);
+    a.corse_con_misura += measuredRuns(r);
     a.in_ritardo += toNum(r.in_ritardo);
     a.minuti_ritardo_tot += toNum(r.minuti_ritardo_tot);
     const canc = r.cancellate_tot !== undefined && r.cancellate_tot !== "" ? r.cancellate_tot : r.cancellate;
@@ -1539,7 +1551,7 @@ function renderStationsTop10() {
   }
 
   let out = Array.from(agg.values());
-  out.forEach((o) => { o.pct_ritardo = o.corse_osservate > 0 ? (o.in_ritardo / o.corse_osservate) * 100 : 0; });
+  out.forEach((o) => { o.pct_ritardo = o.corse_con_misura > 0 ? (o.in_ritardo / o.corse_con_misura) * 100 : 0; });
 
   const metric = getStationsMetric();
   out.sort((a, b) => toNum(b[metric]) - toNum(a[metric]));
@@ -1559,7 +1571,7 @@ function renderStationsTop10() {
 /* ────────────────── map render ────────────────── */
 
 function mapMetricValue(row) {
-  return computeValue(toNum(row.corse_osservate), toNum(row.in_ritardo), toNum(row.minuti_ritardo_tot), toNum(row.soppresse), toNum(row.cancellate_tot));
+  return computeValue(toNum(row.corse_osservate), toNum(row.in_ritardo), toNum(row.minuti_ritardo_tot), toNum(row.soppresse), toNum(row.cancellate_tot), measuredRuns(row));
 }
 
 function renderMap() {
@@ -1583,12 +1595,13 @@ function renderMap() {
     if (!coords) continue;
 
     if (!agg.has(cityKey)) {
-      agg.set(cityKey, { cityKey, nome:prettyCityName(cityKey,city), corse_osservate:0, in_ritardo:0, minuti_ritardo_tot:0, soppresse:0, cancellate_tot:0, lat_weighted_sum:0, lon_weighted_sum:0, weight_sum:0 });
+      agg.set(cityKey, { cityKey, nome:prettyCityName(cityKey,city), corse_osservate:0, corse_con_misura:0, in_ritardo:0, minuti_ritardo_tot:0, soppresse:0, cancellate_tot:0, lat_weighted_sum:0, lon_weighted_sum:0, weight_sum:0 });
     }
     const a = agg.get(cityKey);
     const corse = toNum(r.corse_osservate);
     const weight = Math.max(1, corse);
     a.corse_osservate += corse;
+    a.corse_con_misura += measuredRuns(r);
     a.in_ritardo += toNum(r.in_ritardo);
     a.minuti_ritardo_tot += toNum(r.minuti_ritardo_tot);
     a.soppresse += toNum(r.soppresse);
@@ -1680,13 +1693,15 @@ function mobileYearFilter() {
   };
 }
 
-/** On mobile, when the year changes, flush all lazy-loaded data so it
- *  gets re-fetched and re-filtered for the new year. */
+var _lazyLoadedYear = null;  // year selection the lazy cache was filled for
+
+/** When the year changes, flush lazy-loaded data so it gets re-fetched for
+ *  the new selection. This used to run on mobile only, but with year-sharded
+ *  files desktop needs it too: otherwise a shard fetched for 2025 would stay
+ *  in state after the user switched to 2026. */
 function invalidateLazyOnYearChange() {
-  if (!isMobile()) return;
   var keys = Object.keys(_lazyLoaded);
   for (var i = 0; i < keys.length; i++) delete _lazyLoaded[keys[i]];
-  // Clear the corresponding state arrays
   var slotMap = {
     "od_mese_categoria.csv": "odMonthCat",
     "od_dettaglio_categoria.csv": "odDetailCat",
@@ -1700,21 +1715,50 @@ function invalidateLazyOnYearChange() {
   for (var file in slotMap) {
     if (state.data[slotMap[file]]) state.data[slotMap[file]] = [];
   }
+  _lazyLoadedYear = null;
   invalidateFilterCache();
 }
 
+/**
+ * Files the build publishes one-per-year alongside the full-history file.
+ * The detail and station tables are the heavy ones: od_dettaglio_categoria
+ * alone was 45 MB of CSV that the browser had to parse in full the moment a
+ * user touched a station filter, for a view that then showed a single year.
+ */
+function isYearSharded(fileName) {
+  var sharded = (state.manifest && state.manifest.year_sharded) || [];
+  var base = String(fileName).replace(/\.csv$/, "");
+  return sharded.indexOf(base) !== -1;
+}
+
+/** Resolve a logical file name to the concrete paths to try, preferring the
+ *  shard for the selected year and falling back to the full-history file. */
+function shardCandidates(fileName) {
+  var year = state.filters.year;
+  var paths = [];
+  if (year && year !== "all" && isYearSharded(fileName)) {
+    var shard = String(fileName).replace(/\.csv$/, "." + year + ".csv");
+    paths = paths.concat(candidateFilePaths(state.dataBase, shard));
+  }
+  return paths.concat(candidateFilePaths(state.dataBase, fileName));
+}
+
 async function lazyLoadCSV(fileName, stateKey) {
+  if (_lazyLoadedYear !== null && _lazyLoadedYear !== state.filters.year) {
+    invalidateLazyOnYearChange();
+  }
   if (_lazyLoaded[fileName]) return;
   if (state.data[stateKey] && state.data[stateKey].length > 0) { _lazyLoaded[fileName] = true; return; }
   // If this file is already being loaded, wait for the existing load instead of starting a new one
   if (_lazyLoading[fileName]) return _lazyLoading[fileName];
   _lazyLoading[fileName] = (async function() {
     try {
-      var t = await fetchTextAny(candidateFilePaths(state.dataBase, fileName));
+      var t = await fetchTextAny(shardCandidates(fileName));
       var rows = t ? await parseCSVAsync(t, 5000, mobileYearFilter()) : [];
       t = null;  // Release text reference for GC
       state.data[stateKey] = rows;
       _lazyLoaded[fileName] = true;
+      _lazyLoadedYear = state.filters.year;
       invalidateFilterCache();
       enrichStationsRefFromFacts();
     } finally {
@@ -2001,6 +2045,29 @@ async function loadStationsDimAnyBase(primaryBase) {
   return [];
 }
 
+/**
+ * Load the code→name lookup the build publishes once for every station code
+ * appearing in any fact table. Roughly 30 KB, replacing name columns that used
+ * to be repeated on every one of the millions of fact rows.
+ */
+async function loadStationNamesAnyBase(primaryBase) {
+  const base = ensureTrailingSlash(primaryBase);
+  const file = (state.manifest && state.manifest.station_names_file) || "station_names.csv";
+  const tries = uniq([
+    ...candidateFilePaths(base, file),
+    ...candidateFilePaths("data/", file)
+  ]);
+  const t = await fetchTextAny(tries);
+  if (!t) return 0;
+
+  const rows = parseCSV(t);
+  const pairs = rows.map((r) => [
+    String(r.cod_stazione || "").trim(),
+    String(r.nome_stazione || "").trim()
+  ]);
+  return mergeStationNames(pairs);
+}
+
 async function loadCapoluoghiAnyBase(primaryBase) {
   const base = ensureTrailingSlash(primaryBase);
   const tries = uniq([
@@ -2104,9 +2171,11 @@ async function loadAll() {
     state.stationsRef.set(code, { code, name, lat: Number.isFinite(lat)?lat:NaN, lon: Number.isFinite(lon)?lon:NaN, city });
   }
 
-  // Enrich stationsRef with code→name mappings from fact tables.
-  // This handles codes that changed over time (e.g. S01700 replacing N_ACF3D2764DA3
-  // for Milano Centrale) and are missing from stations_dim.csv.
+  // Codes that changed over time (S01700 replacing N_ACF3D2764DA3 for Milano
+  // Centrale) are missing from stations_dim.csv. They now arrive from the
+  // published lookup instead of being harvested out of the fact tables.
+  const namesAdded = await loadStationNamesAnyBase(base);
+  if (namesAdded) console.log("station_names.csv: added " + namesAdded + " codici");
   enrichStationsRefFromFacts();
 
   const capRows = await loadCapoluoghiAnyBase(base);
