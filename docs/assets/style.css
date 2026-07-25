@@ -797,3 +797,31 @@ body.embed-mode .embed-hide {
   padding-left: 10px;
   color: #7a4a00;
 }
+
+/* Legenda della mappa: il colore porta la metrica selezionata, la dimensione
+   del cerchio il numero di corse osservate. Senza legenda la scala dice
+   "piu' scuro e' peggio" senza dire quanto. */
+.map-legend {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #444;
+}
+.map-legend__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.map-legend__label { font-weight: 600; }
+.map-legend__swatch {
+  width: 22px;
+  height: 12px;
+  display: inline-block;
+  border: 1px solid rgba(0,0,0,0.2);
+}
+.map-legend__scale { font-variant-numeric: tabular-nums; }
+.map-legend__note { margin-top: 2px; color: #6b6b6b; }
+@media (prefers-color-scheme: dark) {
+  .map-legend { color: #ddd; }
+  .map-legend__note { color: #aaa; }
+}

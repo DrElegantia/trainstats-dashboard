@@ -1860,25 +1860,89 @@ function renderMap() {
   pts.sort((a, b) => toNum(b.v) - toNum(a.v));
   const top = pts.slice(0, 250);
 
+  // Due canali visivi indipendenti invece di uno.
+  //
+  // Prima il raggio codificava la metrica e il colore era il blu di default di
+  // Leaflet: una citta' con poche corse molto in ritardo e una con molte corse
+  // poco in ritardo si distinguevano male, e il volume di traffico non era
+  // leggibile. Ora il colore porta la metrica selezionata e la dimensione porta
+  // il numero di corse osservate, che e' il peso di quella metrica.
+  //
+  // Restano marker su tile: un coropleto per aree costerebbe milioni di byte di
+  // geometrie (la mappa comunale del sito ne scarica 4,6 MB e disegna quasi
+  // 8.000 path) e comunque obbligherebbe ad aggregare per provincia, perdendo
+  // il dettaglio per stazione che e' il senso di questa vista.
   const values = top.map((p) => Math.max(0, Number(p.v) || 0));
-  const maxValue = values.length ? Math.max(...values) : 0;
-  const minRadius = 5, maxRadius = 22;
+  const volumes = top.map((p) => Math.max(0, toNum(p.corse_osservate)));
+  const maxVolume = volumes.length ? Math.max(...volumes) : 0;
 
+  // Scala di colore su percentili: i valori sono molto asimmetrici e una scala
+  // lineare sul massimo appiattirebbe quasi tutto sul primo colore.
+  const sorted = values.slice().sort((a, b) => a - b);
+  const quantile = (q) => {
+    if (!sorted.length) return 0;
+    const i = Math.min(sorted.length - 1, Math.max(0, Math.round(q * (sorted.length - 1))));
+    return sorted[i];
+  };
+  const lo = quantile(0.05), hi = quantile(0.95);
+
+  // Rampa sequenziale, leggibile anche con deficit di visione dei colori.
+  const RAMP = ["#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c"];
+  const colorFor = (v) => {
+    if (!(hi > lo)) return RAMP[0];
+    const t = Math.min(1, Math.max(0, (v - lo) / (hi - lo)));
+    return RAMP[Math.min(RAMP.length - 1, Math.floor(t * RAMP.length))];
+  };
+
+  const minRadius = 4, maxRadius = 20;
   const bounds = [];
   for (const p of top) {
     const val = Math.max(0, Number(p.v) || 0);
-    const ratio = maxValue > 0 ? Math.sqrt(val / maxValue) : 0;
+    const vol = Math.max(0, toNum(p.corse_osservate));
+    const ratio = maxVolume > 0 ? Math.sqrt(vol / maxVolume) : 0;
     const radius = minRadius + ratio * (maxRadius - minRadius);
-    const label = p.nome + "<br>" + metricLabel() + ": " + fmtFloat(val);
+    const label = "<b>" + p.nome + "</b><br>" + metricLabel() + ": " + fmtFloat(val)
+      + "<br>Corse osservate: " + fmtInt(vol);
 
-    const m = L.circleMarker([p.coords.lat, p.coords.lon], { radius, opacity:0.9, fillOpacity:0.6 }).addTo(state.map);
+    const m = L.circleMarker([p.coords.lat, p.coords.lon], {
+      radius: radius,
+      color: "#333", weight: 0.7, opacity: 0.85,
+      fillColor: colorFor(val), fillOpacity: 0.85
+    }).addTo(state.map);
     try { m.bindPopup(label); } catch {}
     state.markers.push(m);
     bounds.push([p.coords.lat, p.coords.lon]);
   }
 
+  renderMapLegend(lo, hi, RAMP);
+
   if (bounds.length > 3) { try { state.map.fitBounds(bounds, { padding:[20,20] }); } catch {} }
   setTimeout(() => { try { state.map.invalidateSize(); } catch {} }, 100);
+}
+
+/** Senza legenda una scala di colore non e' leggibile: dice "piu' scuro e'
+ *  peggio" ma non quanto. Il colore porta la metrica, la dimensione il volume. */
+function renderMapLegend(lo, hi, ramp) {
+  const mapEl = document.getElementById("map");
+  if (!mapEl || !mapEl.parentNode) return;
+
+  let box = document.getElementById("mapLegend");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "mapLegend";
+    box.className = "map-legend";
+    mapEl.parentNode.insertBefore(box, mapEl.nextSibling);
+  }
+
+  const swatches = ramp.map(function(c) {
+    return '<span class="map-legend__swatch" style="background:' + c + '"></span>';
+  }).join("");
+
+  box.innerHTML =
+    '<div class="map-legend__row"><span class="map-legend__label">' + metricLabel() + '</span>' +
+    swatches +
+    '<span class="map-legend__scale">' + fmtFloat(lo) + ' → ' + fmtFloat(hi) + '</span></div>' +
+    '<div class="map-legend__row map-legend__note">La dimensione del cerchio indica il numero di corse osservate.</div>';
 }
 
 /* ────────────────── mobile memory management ────────────────── */

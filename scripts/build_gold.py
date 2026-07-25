@@ -447,6 +447,10 @@ def agg_core(group_cols: List[str], df: pd.DataFrame) -> pd.DataFrame:
     agg = g.agg(
         corse_osservate=("_obs_id", "count"),
         corse_con_misura=("delay_valido", "sum"),
+        # Misure scartate perche' il treno ha un orario di arrivo
+        # sistematicamente sbagliato nella sorgente: pubblicata per rendere
+        # l'esclusione verificabile invece che invisibile.
+        corse_orario_sospetto=("orario_arrivo_sospetto", "sum"),
         effettuate=("is_effettuato", "sum"),
         cancellate=("is_cancellato", "sum"),
         soppresse=("is_soppresso", "sum"),
