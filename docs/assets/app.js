@@ -1580,6 +1580,79 @@ function renderHist() {
     }
   }
 
+  // Con partenza E arrivo selezionati, la tabella per stazione non sa
+  // rispondere: e' indicizzata per stazione e ruolo, non per coppia
+  // origine-destinazione, e filtrando solo sull'arrivo mostrerebbe tutti gli
+  // arrivi in quella stazione da qualunque origine (12.102 corse dove i KPI ne
+  // contano 2.117).
+  //
+  // La distribuzione della singola tratta si ricava invece dalle tabelle O/D
+  // che il browser ha gia' scaricato: in_anticipo, in_orario e le soglie
+  // cumulative oltre_5/10/15/30/60 si differenziano in classi disgiunte. La
+  // granularita' e' piu' grossa dei bucket per stazione, ma la popolazione e'
+  // quella giusta.
+  const noteEl = (function() {
+    let n = document.getElementById("histScopeNote");
+    if (!n) {
+      const badges = document.getElementById("badgesHist");
+      if (!badges || !badges.parentNode) return null;
+      n = document.createElement("div");
+      n.id = "histScopeNote";
+      n.className = "card-desc card-desc--warn";
+      badges.parentNode.insertBefore(n, badges.nextSibling);
+    }
+    return n;
+  }());
+
+  const odMode = state.filters.dep !== "all" && state.filters.arr !== "all";
+  if (odMode) {
+    const odRows = getCachedOrFilter("kpi", _computeKpiRows);
+    const sum = (k) => odRows.reduce((a, r) => a + toNum(r[k]), 0);
+    const o5 = sum("oltre_5"), o10 = sum("oltre_10"), o15 = sum("oltre_15"),
+          o30 = sum("oltre_30"), o60 = sum("oltre_60");
+    const classi = [
+      ["in anticipo", sum("in_anticipo")],
+      ["0–4", sum("in_orario")],
+      ["5–9", o5 - o10],
+      ["10–14", o10 - o15],
+      ["15–29", o15 - o30],
+      ["30–59", o30 - o60],
+      ["≥ 60", o60]
+    ];
+    const tot = classi.reduce((a, c) => a + Math.max(0, c[1]), 0);
+
+    if (noteEl) {
+      const depSel2 = document.getElementById("depSel");
+      const arrSel2 = document.getElementById("arrSel");
+      const dn = depSel2 && depSel2.selectedIndex >= 0 ? depSel2.options[depSel2.selectedIndex].text : state.filters.dep;
+      const an = arrSel2 && arrSel2.selectedIndex >= 0 ? arrSel2.options[arrSel2.selectedIndex].text : state.filters.arr;
+      noteEl.textContent = "Distribuzione della tratta " + dn + " → " + an
+        + " (" + fmtInt(tot) + " corse misurate), ricavata dalle soglie della tabella origine-destinazione: "
+        + "classi piu' ampie dei bucket per singola stazione, ma riferite esattamente a questa tratta.";
+      noteEl.style.display = "";
+    }
+
+    safePlotlyReact(chart,
+      [{ x: classi.map((c) => c[0]),
+         y: classi.map((c) => showPct ? (tot > 0 ? (Math.max(0, c[1]) / tot) * 100 : 0) : Math.max(0, c[1])),
+         type: "bar", name: showPct ? "%" : "Conteggio" }],
+      { margin: mobileChartMargins({l:50,r:20,t:10,b:70}),
+        yaxis: {title: isMobile() ? "" : (showPct ? "%" : "Conteggio"), rangemode: "tozero"},
+        xaxis: {title: isMobile() ? "" : "minuti di ritardo all'arrivo", tickangle: isMobile() ? -45 : 0,
+                tickfont: {size: isMobile() ? 8 : undefined}},
+        paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font: mobileFont() },
+      { displayModeBar: false, responsive: true }
+    );
+
+    // L'indicatore di costo e' definito sui minuti dei soli ritardi oltre 5
+    // minuti. La tabella origine-destinazione espone i minuti di ritardo
+    // complessivi, che sono un'altra grandezza: mostrarli nella stessa casella
+    // darebbe un valore piu' alto con la stessa etichetta. Meglio nasconderlo.
+    const costElOd = document.getElementById("costIndicator");
+    if (costElOd) costElOd.style.display = "none";
+    return;
+  }
+
   const byBucket = new Map();
   let total = 0;
   let delayMinsOver5 = 0;
@@ -1602,29 +1675,12 @@ function renderHist() {
   // Dichiara sopra al grafico su quale popolazione e' calcolata la
   // distribuzione: con entrambe le stazioni selezionate non e' la coppia
   // origine-destinazione, e senza dirlo il confronto con i KPI non torna.
-  const noteEl = (function() {
-    let n = document.getElementById("histScopeNote");
-    if (!n) {
-      const badges = document.getElementById("badgesHist");
-      if (!badges || !badges.parentNode) return null;
-      n = document.createElement("div");
-      n.id = "histScopeNote";
-      n.className = "card-desc card-desc--warn";
-      badges.parentNode.insertBefore(n, badges.nextSibling);
-    }
-    return n;
-  }());
+  // Il caso "partenza e arrivo entrambi selezionati" e' gestito sopra, dalla
+  // tabella origine-destinazione. Qui c'e' una sola stazione selezionata (o
+  // nessuna), e i bucket fini della tabella per stazione sono quelli corretti.
   if (noteEl) {
-    if (stationFiltered && state.filters.arr !== "all" && state.filters.dep !== "all") {
-      const arrSel = document.getElementById("arrSel");
-      const arrName = arrSel && arrSel.selectedIndex >= 0 ? arrSel.options[arrSel.selectedIndex].text : state.filters.arr;
-      noteEl.textContent = "Distribuzione di tutti gli arrivi a " + arrName
-        + " (" + fmtInt(total) + " corse misurate), da qualunque origine: il filtro di partenza non si applica a questo grafico.";
-      noteEl.style.display = "";
-    } else {
-      noteEl.textContent = "";
-      noteEl.style.display = "none";
-    }
+    noteEl.textContent = "";
+    noteEl.style.display = "none";
   }
 
   const order = Array.isArray(state.manifest.delay_bucket_labels) && state.manifest.delay_bucket_labels.length
@@ -2163,15 +2219,6 @@ function renderFilterBadges() {
     { id: "badgesTop10", stationApplies: false }
   ];
 
-  // L'istogramma nasce dalla tabella per stazione, che conosce il ruolo
-  // (partenza o arrivo) ma non la coppia origine-destinazione. Con entrambi gli
-  // estremi selezionati puo' rispondere solo su uno dei due, e sceglie
-  // l'arrivo. Prima mostrava comunque entrambi i badge come attivi: con
-  // "Milano Centrale -> Verona P.N." disegnava la distribuzione di TUTTI gli
-  // arrivi a Verona (12.102 corse) mentre i KPI ne contavano 2.117, e gli
-  // anticipi visibili appartenevano ad altre tratte.
-  var histIgnoresDep = (f.dep !== "all" && f.arr !== "all");
-
   targets.forEach(function(t) {
     var el = document.getElementById(t.id);
     if (!el) return;
@@ -2179,16 +2226,6 @@ function renderFilterBadges() {
     if (badges.length === 0) return;
 
     badges.forEach(function(b) {
-      var naPerHist = (t.id === "badgesHist" && histIgnoresDep && b.kind === "dep");
-      if (naPerHist) {
-        var na = document.createElement("span");
-        na.className = "filter-badge filter-badge--na";
-        na.textContent = b.label;
-        na.title = "La distribuzione e' calcolata su tutti gli arrivi nella stazione di arrivo selezionata, "
-                 + "qualunque sia l'origine: la tabella per stazione non contiene la coppia origine-destinazione.";
-        el.appendChild(na);
-        return;
-      }
       if (b.stationFilter && !t.stationApplies) {
         // Show as non-applicable
         var span = document.createElement("span");

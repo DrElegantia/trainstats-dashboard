@@ -749,8 +749,18 @@ def read_gold_table(name: str) -> pd.DataFrame:
     """Reassemble a full gold table from its month partitions."""
     months = _partition_months(name)
     if not months:
+        # Il CSV monolitico e' un residuo del formato precedente e puo' essere
+        # arbitrariamente vecchio. Leggerlo in silenzio come se fosse il gold
+        # corrente e' il modo migliore per analizzare dati stantii senza
+        # accorgersene, cosa che e' effettivamente accaduta durante un rebuild.
         csv_path = os.path.join(GOLD_DIR, f"{name}.csv")
-        return pd.read_csv(csv_path) if os.path.exists(csv_path) else pd.DataFrame()
+        if os.path.exists(csv_path):
+            print(
+                f"  ATTENZIONE: nessuna partizione per {name}, uso il CSV legacy "
+                f"{csv_path}: i dati potrebbero essere stantii"
+            )
+            return pd.read_csv(csv_path)
+        return pd.DataFrame()
 
     parts = [pd.read_parquet(partition_path(name, m)) for m in months]
     return pd.concat(parts, ignore_index=True)
