@@ -464,6 +464,43 @@ una distribuzione di 1.972 corse misurate **della tratta**, non dei 12.102
 arrivi a Verona da qualunque origine. La mappa disegna 97 marker con cinque
 livelli di colore sulla metrica e sei dimensioni sul volume, con legenda.
 
+## 4.9 Verifica della catena di import
+
+Il percorso di ingestione non era mai stato eseguito dopo gli interventi, e
+conteneva due bug.
+
+**Il run notturno restava appeso sul geocoding.** `run_pipeline` invocava
+`build_station_dim` con il geocoding online attivo. Con 1.304 stazioni senza
+coordinate, tre query ciascuna e pause di uno o due secondi fra i tentativi,
+una passata completa impiega ore, e non produce nulla: Nominatim risponde 429 a
+un uso di questo volume, quindi ogni stazione falliva dopo tre tentativi e
+altrettante attese. Il README dichiarava, correttamente nelle intenzioni, che
+"la pipeline non fa geocoding online". Ora il geocoding e' opt-in
+(`--enable-geocoding`) e si interrompe dopo dieci fallimenti consecutivi.
+
+**Due normalizzazioni divergenti dei nomi stazione.** In `build_station_dim`
+viveva una seconda tabella di abbreviazioni, simile ma non identica a quella
+condivisa: espandeva `S.` in `SAN`, mentre quella condivisa fa collassare
+San/Santa/Santo su un token unico. Con le due divergenti il match per nome delle
+coordinate falliva, e cinque stazioni perdevano coordinate che la cache
+conteneva. Delegando a `normalize_station_name` le stazioni georeferenziate
+passano da 1.317 a **1.598**, con copertura del **97,96%** delle corse.
+
+Esito della verifica:
+
+| verifica | esito |
+|---|---|
+| `scripts.ingest` da sorgente reale | scaricato e header validato in modalita' strict, 5 s |
+| contenuto riscaricato vs precedente | 8.646 righe entrambi, colonne identiche, stessa quota di soppressi |
+| `run_pipeline` end-to-end in locale | 5 step, **31,6 s**, exit 0 |
+| invarianti dopo il run incrementale | silver = gold = 6.231.961, zero ritardi medi negativi |
+| workflow `daily.yml` in CI | **12 step su 12 verdi, 1m50s**, incluso commit e deploy |
+| dato pubblicato vs locale | identico: 6.231.961 corse, ritardo medio 3,121 |
+
+Il commit prodotto dalla CI tocca **sei piccoli parquet del solo mese
+aggiornato**, non un CSV monolitico da riscrivere per intero: e' la conferma
+sul campo che la partizione mensile risolve anche la crescita del repository.
+
 ---
 
 ## 5. Cosa resta noto e non risolto
