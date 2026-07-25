@@ -252,6 +252,26 @@ mostrava, nessun numero appariva assurdo: si vedeva solo perche' l'invariante
 "silver e gold devono contare le stesse corse" e' verificato a ogni
 ricostruzione. Uno scarto di 33 righe su 11 milioni non si nota a occhio.
 
+### 3.12 I grafici mensili scavalcavano i mesi mancanti
+
+Emerso pubblicando lo storico, e non e' un difetto dei dati ma di come
+vengono disegnati.
+
+L'asse di Plotly e' categorico: mette in sequenza i mesi che esistono, e la
+linea li congiunge in ordine. Con lo storico caricato, l'asse passava da
+`12/23` direttamente a `06/24`, tracciando un andamento **continuo sopra i
+cinque mesi assenti**. Chi legge non ha modo di accorgersi che manca qualcosa:
+un buco invisibile e' peggio di un buco.
+
+`conMesiMancanti` completa la sequenza fra il primo e l'ultimo mese inserendo
+quelli assenti con valore nullo, e Plotly interrompe la linea. I totali non si
+muovono: le voci inserite non entrano in nessuna somma, la funzione e' usata
+solo dalle due serie mensili.
+
+Il difetto e' strutturale, non legato a questo buco: valeva per qualunque mese
+mancante, e vale anche per i due giorni assenti di gennaio 2025, che restano
+comunque non segnalati (il grafico e' mensile, e gennaio 2025 esiste).
+
 ---
 
 ## 4. Verifica di credibilita' contro la dashboard precedente

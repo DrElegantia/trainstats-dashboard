@@ -1422,7 +1422,32 @@ function aggregateByMonth(rows) {
     const cv = r.cancellate_tot !== undefined && r.cancellate_tot !== "" ? r.cancellate_tot : r.cancellate;
     o.canc += toNum(cv);
   }
-  return Array.from(by.values()).sort((a, b) => String(a.key).localeCompare(String(b.key)));
+  return conMesiMancanti(Array.from(by.values()).sort((a, b) => String(a.key).localeCompare(String(b.key))));
+}
+
+/* Inserisce i mesi assenti fra il primo e l'ultimo, marcati come vuoti.
+ *
+ * Senza questo, l'asse categorico di Plotly mette in sequenza solo i mesi che
+ * esistono e la linea li congiunge: con lo storico caricato l'asse passava da
+ * 12/23 direttamente a 06/24, disegnando un andamento continuo sopra cinque
+ * mesi che non ci sono. Un buco invisibile e' peggio di un buco: chi legge non
+ * ha modo di sapere che manca qualcosa. Il valore nullo interrompe la linea. */
+function conMesiMancanti(out) {
+  if (out.length < 2) return out;
+  const parse = (k) => { const p = String(k).split("-"); return [Number(p[0]), Number(p[1])]; };
+  const pieno = [];
+  let [y, m] = parse(out[0].key);
+  const [yf, mf] = parse(out[out.length - 1].key);
+  const indice = new Map(out.map((o) => [o.key, o]));
+  // Limite di sicurezza: se le chiavi non fossero interpretabili, meglio
+  // restituire la serie originale che iterare senza fine.
+  for (let i = 0; i < 1200 && (y < yf || (y === yf && m <= mf)); i++) {
+    const key = String(y) + "-" + String(m).padStart(2, "0");
+    pieno.push(indice.get(key) || { key, vuoto: true, corse: 0, mis: 0, rit: 0, min: 0, sopp: 0, canc: 0 });
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+  }
+  return pieno.length >= out.length ? pieno : out;
 }
 
 function _computeSeriesRows() {
@@ -1465,7 +1490,7 @@ function seriesMonthly() {
   const out = aggregateByMonth(rows);
   return {
     x: out.map((o) => fmtMonthShort(o.key)),
-    y: out.map((o) => computeValue(o.corse, o.rit, o.min, o.sopp, o.canc, o.mis))
+    y: out.map((o) => o.vuoto ? null : computeValue(o.corse, o.rit, o.min, o.sopp, o.canc, o.mis))
   };
 }
 
@@ -1474,7 +1499,10 @@ function seriesDelayIndex() {
   const out = aggregateByMonth(rows);
   return {
     x: out.map((o) => fmtMonthShort(o.key)),
-    y: out.map((o) => o.corse > 0 ? ((o.rit + o.canc + o.sopp) / o.corse) * 100 : 0)
+    y: out.map((o) => {
+      if (o.vuoto) return null;
+      return o.corse > 0 ? ((o.rit + o.canc + o.sopp) / o.corse) * 100 : 0;
+    })
   };
 }
 
