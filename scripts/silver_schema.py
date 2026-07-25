@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -28,10 +29,25 @@ def parse_treni_payload(x: Any) -> List[Dict[str, Any]]:
     s = str(x).strip()
     if not s or s.lower() == "nan":
         return []
-    try:
-        parsed = ast.literal_eval(s)
-    except Exception:
-        return []
+
+    parsed = None
+    # I bronze storici contengono il repr() Python della lista (apici singoli),
+    # che si legge solo con ast.literal_eval: su un payload da 12 MB significa
+    # ~4 secondi, quasi tutti spesi a compilare. I file scritti da
+    # scripts.import_history usano invece JSON, che qui viene riconosciuto e
+    # letto un ordine di grandezza piu' velocemente.
+    if s.startswith("["):
+        try:
+            parsed = json.loads(s)
+        except ValueError:
+            parsed = None
+
+    if parsed is None:
+        try:
+            parsed = ast.literal_eval(s)
+        except Exception:
+            return []
+
     if isinstance(parsed, list):
         return [r for r in parsed if isinstance(r, dict)]
     return []
@@ -105,10 +121,18 @@ def normalize_bronze_schema(df: pd.DataFrame) -> pd.DataFrame:
     if "treni" not in df.columns:
         return df
 
+    # itertuples costruisce una namedtuple, e i nomi che iniziano con underscore
+    # non sono identificatori validi: pandas li rinomina in posizionali (_1, _2).
+    # Accedere per nome a "_reference_date", "_extracted_at_utc" e "_bronze_path"
+    # restituiva quindi sempre la stringa vuota, e la data di riferimento andava
+    # persa per ogni file dello schema legacy. Si accede per posizione.
+    positions = {c: df.columns.get_loc(c) for c in _CARRIED_COLUMNS if c in df.columns}
+    treni_pos = df.columns.get_loc("treni")
+
     records: List[Dict[str, Any]] = []
-    for r in df.itertuples(index=False):
-        carried = {c: getattr(r, c, "") for c in _CARRIED_COLUMNS}
-        for t in parse_treni_payload(getattr(r, "treni", None)):
+    for r in df.itertuples(index=False, name=None):
+        carried = {c: r[i] for c, i in positions.items()}
+        for t in parse_treni_payload(r[treni_pos]):
             rec = {out: t.get(key, "") for out, key in _PAYLOAD_COLUMNS.items()}
             rec["_op_epoch"] = t.get("op")
             rec["_oa_epoch"] = t.get("oa")
