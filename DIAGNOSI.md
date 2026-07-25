@@ -304,9 +304,20 @@ mattina, tutta la storia), servite in locale:
 | byte decodificati | 158 MB | 94 MB | 26 MB |
 | righe in memoria | 1.872.841 | 1.887.725 | 520.307 |
 
-Sulla dashboard **in produzione** il caricamento iniziale misurato e' di
-**12,4 secondi**. In locale, con i nuovi dati, il primo render arriva in
-**396 ms** scaricando 233 KB su 8 file.
+Primo render misurato sui siti pubblicati, con il cronometro iniettato prima
+del caricamento del documento (misurarlo dopo, da console, conta anche il tempo
+morto fra il load e l'esecuzione dello script e restituisce numeri gonfiati):
+
+| | primo render | file | KB |
+|---|---|---|---|
+| produzione | 1.651 ms | 8 | 279 |
+| nuova | **1.164 ms** | 8 | 257 |
+
+In locale, senza latenza di rete, il primo render della nuova e' di 396 ms.
+
+Nella stessa misura emerge il §4.2 a colpo d'occhio: il KPI "corse osservate"
+della dashboard in produzione riporta **6.391.517**, quello della nuova
+**6.231.699**. Il totale in home era gonfiato di 159.818 corse.
 
 ### 4.5 Bug della dashboard trovato durante la verifica
 
