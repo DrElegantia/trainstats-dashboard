@@ -1,7 +1,9 @@
 # scripts/build_site.py
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -240,7 +242,49 @@ def main() -> None:
     (target / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    print(json.dumps({"target": str(target), "files": len(files)}, ensure_ascii=False))
+    stampati = timbra_versione_asset()
+    print(json.dumps({"target": str(target), "files": len(files),
+                      "html_timbrati": stampati}, ensure_ascii=False))
+
+
+_ASSET_RX = re.compile(r'(assets/(?:app\.js|style\.css))(\?v=[0-9a-f]+)?')
+
+
+def timbra_versione_asset(cartella: str = "docs") -> int:
+    """Aggiunge alle pagine la versione di app.js e style.css.
+
+    I CSV portano gia' la data di build come versione, ma gli script no: un
+    browser poteva tenere in cache app.js vecchio e ricevere index.html nuovo,
+    o il contrario. Il sintomo era la mappa che scompariva senza un errore in
+    console, e non c'era modo di distinguerlo da un guasto vero.
+
+    La versione e' l'impronta del contenuto, non la data: cosi' l'HTML cambia
+    solo quando l'asset cambia davvero, e le build quotidiane non producono
+    diff inutili.
+    """
+    base = Path(cartella)
+    impronte = {}
+    for nome in ("app.js", "style.css"):
+        p = base / "assets" / nome
+        if p.exists():
+            impronte[nome] = hashlib.sha256(p.read_bytes()).hexdigest()[:10]
+    if not impronte:
+        return 0
+
+    def sostituisci(m: "re.Match") -> str:
+        percorso = m.group(1)
+        nome = percorso.rsplit("/", 1)[-1]
+        h = impronte.get(nome)
+        return percorso + (f"?v={h}" if h else "")
+
+    toccati = 0
+    for pagina in sorted(base.glob("*.html")):
+        testo = pagina.read_text(encoding="utf-8")
+        nuovo = _ASSET_RX.sub(sostituisci, testo)
+        if nuovo != testo:
+            pagina.write_text(nuovo, encoding="utf-8")
+            toccati += 1
+    return toccati
 
 
 if __name__ == "__main__":
