@@ -900,6 +900,77 @@ i chilometri non dipendono dall'anno o dalla categoria, e una durata media
 calcolata su tre corse non vorrebbe dire niente. Il file pubblicato e'
 `indicatori_km.csv`, un centinaio di KB.
 
+### 7.2.1 Il grafo RINF saldava la Sicilia alla Puglia
+
+Emerso cercando le tratte che attraversano lo Stretto, e non riguarda solo
+quelle.
+
+Il grafo delle sezioni di linea era costruito sui **nomi** normalizzati dei
+punti operativi. In Italia ci sono tre San Paolo: uno vicino a Messina, uno fra
+Noto e Rosolini, uno vicino a Taranto. Il nome li fondeva in un unico nodo, e da
+li' passava un collegamento che non esiste. Il cammino minimo Messina-Roma
+usciva dalla Sicilia via Taranto **senza attraversare lo Stretto**: 564 km
+invece di circa 900.
+
+Non era un caso isolato ne' solo siciliano. La stessa saldatura su San Benigno
+accorciava Savona-Bari di 364 km, e Ventimiglia-Lecce di altrettanto. Sei nomi
+corrispondevano a piu' di un punto operativo.
+
+Il grafo ora si costruisce sugli **identificativi** dei punti operativi, che il
+RINF pubblica e che il nome non sostituisce. Un nome che corrisponde a piu'
+nodi genera piu' partenze e si tiene la distanza minima fra le combinazioni,
+invece di fonderli.
+
+| | prima | dopo |
+|---|---|---|
+| tratte invariate entro lo 0,1% | | 11.157 su 12.171 |
+| tratte cambiate oltre il 5% | | **875** |
+| correzione massima | | +364 km |
+| tratte sparite, esistevano solo per la saldatura | | 174 |
+
+Tolta la saldatura la Sicilia risulta quello che e': una rete separata, 212
+punti operativi che non toccano il continente. Il RINF non dichiara lo Stretto
+perche' non e' una sezione di linea, e ha ragione: i treni ci passano caricati
+sulla nave. Senza un lato li' pero' ogni collegamento fra l'isola e il
+continente resta senza distanza, compresi i 3.488 Roma-Palermo che ci sono nei
+dati. Il traghettamento e' quindi aggiunto come lato esplicito Villa San
+Giovanni-Messina di 9 km, che e' il valore del prontuario FS, dichiarato nel
+codice per quello che e': l'unica distanza del grafo che non viene da un
+registro di infrastruttura.
+
+### 7.2.2 Reggio Calabria era due stazioni
+
+Trovata dal confronto fra le tratte dello Stretto: Roma-Reggio compariva due
+volte con numeri diversi. La sorgente scrive sia "REGGIO CALABRIA CENTRALE"
+(167.796 corse) sia "REGGIO DI CALABRIA CENTRALE" (51.030), e le due grafie
+erano due identita' separate per **218.826 corse**: la spaccatura piu' grande
+rimasta dopo quella degli accenti.
+
+La regola aggiunta toglie il "di" fra due parti del nome. Sulle 3.359 stazioni
+dell'anagrafica e' l'unico caso in cui toglierlo unisce due voci, quindi non
+rischia di fondere stazioni diverse, e "Diano Marina" e "Ronchi dei Legionari"
+restano intatte. Vale in entrambi i normalizzatori, quello della pipeline e
+quello del browser, verificati uno contro l'altro.
+
+### 7.2.3 Il costo della traversata, misurato
+
+Il rapporto per chilometro non lo mostra, perche' diluito su seicento
+chilometri sparisce. Si vede in un confronto fra due tratte lunghe uguali:
+
+| | km | orario | corse |
+|---|---|---|---|
+| Roma Termini-Reggio Calabria Centrale | 653,7 | 6h51 | 28.082 |
+| Roma Termini-Messina Centrale | 648,6 | 8h53 | 579 |
+
+**Cinque chilometri in meno, 122 minuti in piu'.** Quelle due ore sono manovra,
+imbarco, traversata e sbarco. E' l'unico punto della rete dove il tempo non ha
+niente a che vedere con la distanza, e sta nella dashboard sotto la classifica
+per chilometro, calcolato dai dati pubblicati e non scritto a mano.
+
+Le quattro tratte che attraversano lo Stretto, dopo la correzione dei
+chilometri, non sono lente: 80-89 minuti per 100 km contro una mediana
+nazionale di 104,9, cioe' 67-74 km/h contro 57,2.
+
 ### 7.3 Cosa ha trovato la classifica che la mappa non mostrava
 
 Il rapporto fra chilometri e minuti e' un controllo di plausibilita' che le

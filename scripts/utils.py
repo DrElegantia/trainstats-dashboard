@@ -167,6 +167,13 @@ _ABBREVIATIONS = [
     (r"\bMAR\.?\s?MO\b", "MARITTIMO"),
     (r"\bSCR\.?\b", "SCRIVIA"),
     (r"\bMOV\.?\b", "MOVIMENTO"),
+    # "Reggio di Calabria Centrale" e "Reggio Calabria Centrale" sono la stessa
+    # stazione scritta in due modi, e restavano due identita' separate per
+    # 218.826 corse: la piu' grande ancora spezzata dopo la sistemazione degli
+    # accenti. Il "di" fra due parti del nome non distingue niente, e sulle
+    # 3.359 stazioni dell'anagrafica questo e' l'unico caso in cui toglierlo
+    # unisce due voci: non rischia di fondere stazioni diverse.
+    (r"\bDI\b", " "),
     # Tutte le forme di "San/Santa/Santo/Santi" collassano su un unico token.
     # La sorgente scrive "VENEZIA S.LUCIA" e "VENEZIA SANTA LUCIA" per la stessa
     # stazione, e da "S." non si puo' dedurre se valga SAN o SANTA: unificarle

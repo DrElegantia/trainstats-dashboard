@@ -450,6 +450,9 @@ var _STATION_ABBREV = [
   [/\bMAR\.?\s?MO\b/g, "MARITTIMO"],
   [/\bSCR\.?\b/g, "SCRIVIA"],
   [/\bMOV\.?\b/g, "MOVIMENTO"],
+  // "Reggio di Calabria Centrale" e "Reggio Calabria Centrale" sono la stessa
+  // stazione: erano due voci per 218.826 corse.
+  [/\bDI\b/g, " "],
   [/\bSS\.?\b/g, "S"],
   [/\bSANTI\b/g, "S"],
   [/\bSANTA\b/g, "S"],
@@ -2543,6 +2546,43 @@ function renderKmRanking() {
       `${Math.round(100 * ufficiali / righe.length)}% con la distanza ufficiale del RINF. ` +
       "Sotto i 30 km il rapporto per chilometro misura le manovre invece del viaggio.";
   }
+
+  renderStretto(righe);
+}
+
+/**
+ * Il costo della traversata dello Stretto, misurato invece che raccontato.
+ *
+ * Roma-Reggio Calabria e Roma-Messina sono lunghe uguali a cinque chilometri di
+ * differenza, e la seconda ci mette due ore in piu'. Quelle due ore sono la
+ * nave: manovra, imbarco, traversata, sbarco. E' l'unico punto della rete dove
+ * il tempo non ha niente a che vedere con la distanza, e sui rapporti per
+ * chilometro non si vede, perche' diluito su seicento chilometri sparisce.
+ *
+ * Il confronto si calcola dai dati pubblicati e non e' scritto a mano: se
+ * l'orario cambia, cambia il numero.
+ */
+function renderStretto(righe) {
+  const el = document.getElementById("kmStretto");
+  if (!el) return;
+  const trova = (a, b) => righe.find((r) =>
+    (r.partenza === a && r.arrivo === b) || (r.partenza === b && r.arrivo === a));
+  const viaNave = trova("MESSINA CENTRALE", "ROMA TERMINI");
+  const viaTerra = trova("REGGIO CALABRIA CENTRALE", "ROMA TERMINI");
+  if (!viaNave || !viaTerra) { el.textContent = ""; return; }
+
+  const dKm = toNum(viaNave.km) - toNum(viaTerra.km);
+  const dMin = toNum(viaNave.durata_media_min) - toNum(viaTerra.durata_media_min);
+  if (!(dMin > 0) || Math.abs(dKm) > 40) { el.textContent = ""; return; }
+
+  const ore = (m) => Math.floor(m / 60) + "h" + String(Math.round(m % 60)).padStart(2, "0");
+  el.innerHTML =
+    "<strong>La traversata dello Stretto costa " + Math.round(dMin) + " minuti.</strong> " +
+    "Roma-Reggio Calabria è " + toNum(viaTerra.km).toFixed(0) + " km in " +
+    ore(toNum(viaTerra.durata_media_min)) + ", Roma-Messina " +
+    toNum(viaNave.km).toFixed(0) + " km in " + ore(toNum(viaNave.durata_media_min)) + ": " +
+    Math.abs(dKm).toFixed(0) + " km in meno e due ore in più, perché il treno sale sulla nave. " +
+    "Sui rapporti per chilometro non si vede, diluito su seicento chilometri sparisce.";
 }
 
 function initKmMetricSel() {

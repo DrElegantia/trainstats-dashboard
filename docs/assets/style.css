@@ -854,3 +854,15 @@ body.embed-mode .embed-hide {
 .map-soglia__controlli select { padding: 4px 6px; }
 .map-soglia__controlli input[type="range"] { flex: 1 1 140px; min-width: 120px; }
 .map-soglia__controlli output { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 3.2em; }
+
+/* Riquadro per un risultato che merita di essere letto, non solo consultato:
+   la nota sotto la classifica per chilometro sul costo della traversata. */
+.note--evidenza {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-left: 3px solid #0073e6;
+  background: rgba(0, 115, 230, 0.06);
+  border-radius: 0 8px 8px 0;
+  line-height: 1.5;
+}
+.note--evidenza:empty { display: none; }
