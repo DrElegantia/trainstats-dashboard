@@ -967,9 +967,22 @@ imbarco, traversata e sbarco. E' l'unico punto della rete dove il tempo non ha
 niente a che vedere con la distanza, e sta nella dashboard sotto la classifica
 per chilometro, calcolato dai dati pubblicati e non scritto a mano.
 
-Le quattro tratte che attraversano lo Stretto, dopo la correzione dei
-chilometri, non sono lente: 80-89 minuti per 100 km contro una mediana
-nazionale di 104,9, cioe' 67-74 km/h contro 57,2.
+Il numero da solo pero' si legge come una condanna, e il confronto con il resto
+della rete dice il contrario. Le quattro tratte che attraversano lo Stretto
+viaggiano fra **67 e 74 km/h programmati contro una mediana di 57**, e **866
+tratte su 1.192, il 73%, impiegano piu' minuti per chilometro della peggiore
+fra loro**. Due ore di nave diluite su 650-1.400 km pesano meno di un regionale
+che ferma ovunque: Eboli-Nocera Inferiore, 41 km, sta a 25 km/h.
+
+Le quattro tratte sono marcate nel file pubblicato con una colonna
+`attraversa_stretto`, perche' saperlo richiede il grafo della rete e il browser
+non ce l'ha. Riconoscerle dalla geografia non funziona: allo Stretto Messina e
+Reggio distano tre chilometri e qualunque soglia su latitudine o longitudine ne
+sbaglia una delle due. Decide la componente connessa del RINF, e le coordinate
+intervengono solo per le stazioni siciliane che il registro chiama in un altro
+modo (Taormina Giardini, Punta Raisi Aeroporto), che altrimenti risultavano
+continentali e facevano sembrare che mezza Sicilia interna attraversasse lo
+Stretto.
 
 ### 7.3 Cosa ha trovato la classifica che la mappa non mostrava
 

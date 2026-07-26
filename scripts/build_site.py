@@ -173,7 +173,10 @@ def copy_root_files(target_dir: Path) -> None:
     if km.exists():
         colonne = ["partenza", "arrivo", "km", "qualita_km", "corse",
                    "durata_media_min", "ritardo_medio_min", "min_per_100km",
-                   "ritardo_per_100km", "km_h_programmati", "km_h_effettivi"]
+                   "ritardo_per_100km", "km_h_programmati", "km_h_effettivi",
+                   # Quali tratte attraversano lo Stretto lo sa solo la
+                   # pipeline, che ha il grafo della rete: nel browser non c'e'.
+                   "attraversa_stretto"]
         d = pd.read_csv(km)
         d = d[[c for c in colonne if c in d.columns]]
         # Due decimali bastano: il file scende da 200 a 90 KB.

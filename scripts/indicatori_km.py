@@ -49,6 +49,69 @@ MIN_KM = 30.0
 MIN_CORSE = 300
 
 
+def _stazioni_siciliane() -> set:
+    """I nomi delle stazioni che stanno sulla rete siciliana.
+
+    Non si ricavano dalla geografia: allo Stretto Messina e Reggio Calabria
+    distano tre chilometri, e qualunque soglia su latitudine o longitudine ne
+    sbaglia una delle due. Si ricavano dal grafo: tolto il traghettamento, che
+    non e' una sezione di linea, la Sicilia e' una componente connessa a se',
+    e chi ci sta dentro e' siciliano per definizione di rete.
+    """
+    import json
+    from collections import deque
+    percorso = os.path.join("data", "stations", "rinf_sezioni.json")
+    if not os.path.exists(percorso):
+        return set()
+    with open(percorso, encoding="utf-8") as f:
+        sezioni = json.load(f)
+    vicini: Dict[str, list] = {}
+    nomi: Dict[str, str] = {}
+    for s in sezioni:
+        a, b = s.get("ida"), s.get("idb")
+        if not a or not b or a == b:
+            continue
+        vicini.setdefault(a, []).append(b)
+        vicini.setdefault(b, []).append(a)
+        nomi[a] = normalize_station_name(s["a"])
+        nomi[b] = normalize_station_name(s["b"])
+    inizio = next((i for i, n in nomi.items() if n == "MESSINA CENTRALE"), None)
+    if inizio is None:
+        return set()
+    visti = {inizio}
+    coda = deque([inizio])
+    while coda:
+        n = coda.popleft()
+        for v in vicini.get(n, ()):
+            if v not in visti:
+                visti.add(v)
+                coda.append(v)
+    isola = {nomi[i] for i in visti if nomi.get(i)}
+    continente = {nomi[i] for i in nomi if i not in visti and nomi.get(i)}
+
+    # Il grafo copre solo le stazioni che il RINF nomina come noi: Taormina la
+    # chiama "Taormina Giardini", Punta Raisi "Punta Raisi Aeroporto", e senza
+    # un secondo criterio quelle stazioni risultavano continentali, quindi ogni
+    # loro collegamento interno alla Sicilia sembrava attraversare lo Stretto.
+    # Le coordinate bastano ovunque tranne che allo Stretto, dove Messina e
+    # Reggio distano tre chilometri: li' decide il grafo, che viene prima.
+    import pandas as pd
+    dim = os.path.join("data", "gold", "stations_dim.csv")
+    if os.path.exists(dim):
+        d = pd.read_csv(dim)
+        for nome, lat, lon in zip(d["nome_stazione"], d["lat"], d["lon"]):
+            k = normalize_station_name(str(nome))
+            if not k or k in isola or k in continente:
+                continue
+            if pd.isna(lat) or pd.isna(lon):
+                continue
+            # Riquadro della Sicilia, meno la punta della Calabria che ci
+            # rientrerebbe per longitudine.
+            if 36.6 <= lat <= 38.35 and 12.3 <= lon <= 15.65 and not (lat >= 37.9 and lon >= 15.60):
+                isola.add(k)
+    return isola
+
+
 def _km_per_tratta() -> Dict[Tuple[str, str], Tuple[float, str]]:
     fuori: Dict[Tuple[str, str], Tuple[float, str]] = {}
     with open(KM, encoding="utf-8") as f:
@@ -114,6 +177,13 @@ def tabella(min_corse: int = MIN_CORSE, min_km: float = MIN_KM) -> pd.DataFrame:
     g["km_h_programmati"] = g["km"] / (g["durata_media_min"] / 60.0)
     g["km_h_effettivi"] = g["km"] / ((g["durata_media_min"] + g["ritardo_medio_min"]) / 60.0)
     g["pct_ritardo"] = g["in_ritardo"] / g["con_misura"].where(g["con_misura"] > 0) * 100
+
+    # Una tratta attraversa lo Stretto se ha un capo sulla rete siciliana e
+    # l'altro no. Serve segnarlo qui perche' e' l'unico posto dove si sa: nel
+    # browser il grafo della rete non c'e'.
+    sic = _stazioni_siciliane()
+    g["attraversa_stretto"] = ((g["partenza"].isin(sic) != g["arrivo"].isin(sic))
+                               & (g["partenza"].isin(sic) | g["arrivo"].isin(sic)))
 
     g = g[(g["corse"] >= min_corse) & (g["km"] >= min_km) & g["durata_media_min"].notna()]
     return g.sort_values("min_per_100km", ascending=False).reset_index(drop=True)

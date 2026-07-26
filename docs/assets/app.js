@@ -2576,13 +2576,43 @@ function renderStretto(righe) {
   if (!(dMin > 0) || Math.abs(dKm) > 40) { el.textContent = ""; return; }
 
   const ore = (m) => Math.floor(m / 60) + "h" + String(Math.round(m % 60)).padStart(2, "0");
-  el.innerHTML =
+  let testo =
     "<strong>La traversata dello Stretto costa " + Math.round(dMin) + " minuti.</strong> " +
     "Roma-Reggio Calabria è " + toNum(viaTerra.km).toFixed(0) + " km in " +
     ore(toNum(viaTerra.durata_media_min)) + ", Roma-Messina " +
     toNum(viaNave.km).toFixed(0) + " km in " + ore(toNum(viaNave.durata_media_min)) + ": " +
-    Math.abs(dKm).toFixed(0) + " km in meno e due ore in più, perché il treno sale sulla nave. " +
-    "Sui rapporti per chilometro non si vede, diluito su seicento chilometri sparisce.";
+    Math.abs(dKm).toFixed(0) + " km in meno e due ore in più, perché il treno sale sulla nave.";
+
+  // Il costo della nave da solo suona come una condanna. Il confronto con il
+  // resto della rete dice il contrario, ed e' il motivo per cui la classifica
+  // per chilometro non le mette mai in cima: due ore diluite su seicento
+  // chilometri pesano meno di un regionale che ferma ovunque.
+  const stretto = righe.filter((r) => VERO.has(String(r.attraversa_stretto).toLowerCase()));
+  if (stretto.length >= 2) {
+    const peggiore = Math.max(...stretto.map((r) => toNum(r.min_per_100km)));
+    const piuLente = righe.filter((r) => toNum(r.min_per_100km) > peggiore).length;
+    const vel = stretto.map((r) => toNum(r.km_h_programmati));
+    const mediana = medianaDi(righe.map((r) => toNum(r.km_h_programmati)));
+    testo += " Ma il treno per la Sicilia non è lento: le " + stretto.length +
+      " tratte che attraversano lo Stretto viaggiano fra " +
+      Math.min(...vel).toFixed(0) + " e " + Math.max(...vel).toFixed(0) +
+      " km/h programmati contro una mediana di " + mediana.toFixed(0) + ", e " +
+      fmtInt(piuLente) + " tratte su " + fmtInt(righe.length) + " (" +
+      Math.round(100 * piuLente / righe.length) + "%) impiegano più minuti per " +
+      "chilometro della peggiore fra loro.";
+  }
+  el.innerHTML = testo;
+}
+
+// I CSV scrivono i booleani come li scrive pandas, e il browser li rilegge come
+// testo: meglio elencare le forme accettate che fidarsi di una sola.
+const VERO = new Set(["true", "1", "vero", "sì", "si"]);
+
+function medianaDi(v) {
+  const a = v.filter(Number.isFinite).sort((x, y) => x - y);
+  if (!a.length) return NaN;
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
 }
 
 function initKmMetricSel() {
