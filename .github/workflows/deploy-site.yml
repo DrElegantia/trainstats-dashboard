@@ -5,6 +5,13 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      # I CSV pubblicati non stanno nel repository: li ricostruisce build_site
+      # dalle partizioni gold dentro questo workflow. Senza questi percorsi una
+      # correzione ai dati non arrivava sul sito fino alla notte successiva, e
+      # sembrava che il deploy non fosse partito.
+      - "data/gold/**"
+      - "data/stations/**"
+      - "scripts/build_site.py"
 
   workflow_dispatch:
 
