@@ -22,7 +22,13 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: false
+  # GitHub Pages accetta un deployment alla volta per repository: con due push
+  # a pochi minuti di distanza il secondo run partiva mentre il primo stava
+  # ancora pubblicando e moriva con "due to in progress deployment", lasciando
+  # un fallimento rosso che sembrava un guasto della build. Qui conta solo il
+  # contenuto piu' recente, quindi il run nuovo annulla quello vecchio invece di
+  # accodarsi e scontrarsi con lui.
+  cancel-in-progress: true
 
 jobs:
   deploy:
