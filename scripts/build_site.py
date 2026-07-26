@@ -95,15 +95,21 @@ ENCODED_COLUMNS = ["tipo_giorno", "fascia_oraria", "ruolo", "bucket_ritardo_arri
 
 
 def harvest_codebook(df: pd.DataFrame, codebook: Dict[str, List[str]]) -> None:
+    """Raccoglie i valori delle colonne categoriche in ordine deterministico.
+
+    L'ordine conta: nei CSV pubblicati queste colonne sono numeri, e il numero
+    e' la posizione nel codebook. Prima l'ordine era quello in cui i valori
+    comparivano nei dati, quindi bastava una nuova classe dell'istogramma per
+    rimescolare tutti gli indici, "arrivo" diventava "partenza" e la dashboard
+    mostrava zero corse su qualunque stazione. Ordinando, la stessa build sugli
+    stessi dati produce sempre gli stessi indici.
+    """
     for col in ENCODED_COLUMNS:
         if col not in df.columns:
             continue
         known = codebook.setdefault(col, [])
-        seen = set(known)
-        for v in df[col].dropna().astype(str).unique():
-            if v not in seen:
-                seen.add(v)
-                known.append(v)
+        valori = set(known) | {str(v) for v in df[col].dropna().unique()}
+        known[:] = sorted(valori)
 
 
 def encode_frame(df: pd.DataFrame, codebook: Dict[str, List[str]]) -> pd.DataFrame:

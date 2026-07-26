@@ -26,14 +26,33 @@ window.addEventListener("unhandledrejection", (e) => {
 
 /* ────────────────── fetch helpers ────────────────── */
 
+// Le colonne categoriche dei CSV sono numeri, e il significato di quei numeri
+// sta nel codebook del manifest. Manifest e CSV vanno quindi letti sempre in
+// coppia: un manifest vecchio in cache con dati nuovi decodifica "arrivo" come
+// "partenza", il filtro stazione non trova piu' nulla e la dashboard mostra
+// zero corse su qualunque stazione. E' esattamente quello che e' successo
+// pubblicando una nuova classe dell'istogramma.
+//
+// Il manifest si rilegge sempre dalla rete, i dati portano in coda la data di
+// build come versione: cosi' la cache lavora ma non puo' mai accoppiare due
+// versioni diverse.
+let _versioneDati = "";
+
+function conVersione(path) {
+  if (!_versioneDati) return path;
+  return path + (path.includes("?") ? "&" : "?") + "v=" + encodeURIComponent(_versioneDati);
+}
+
 async function fetchText(path) {
-  const r = await fetch(path, { cache: "default" });
+  const r = await fetch(conVersione(path), { cache: "default" });
   if (!r.ok) throw new Error("Failed fetch " + path + " (" + r.status + ")");
   return await r.text();
 }
 
 async function fetchJson(path) {
-  const r = await fetch(path, { cache: "default" });
+  const manifest = /manifest\.json(\?|$)/.test(path);
+  const r = await fetch(manifest ? path : conVersione(path),
+                        manifest ? { cache: "no-store" } : { cache: "default" });
   if (!r.ok) throw new Error("Failed fetch " + path + " (" + r.status + ")");
   return await r.json();
 }
@@ -2517,6 +2536,9 @@ async function loadAll() {
   state.manifest = man || safeManifestDefaults();
 
   const built = state.manifest && state.manifest.built_at_utc ? state.manifest.built_at_utc : "";
+  // Da qui in avanti ogni CSV viene chiesto con questa versione in coda, cosi'
+  // non puo' arrivare un file di una build diversa dal manifest appena letto.
+  _versioneDati = built;
   setMeta(built ? "Aggiornamento: " + built : "Caricamento...");
 
   const files = state.manifest && Array.isArray(state.manifest.gold_files) && state.manifest.gold_files.length
