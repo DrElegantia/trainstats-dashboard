@@ -170,6 +170,7 @@ _SUM_COLS = frozenset([
     "in_orario", "in_ritardo", "in_anticipo", "puntuali",
     "oltre_5", "oltre_10", "oltre_15", "oltre_30", "oltre_60",
     "minuti_ritardo_tot", "minuti_anticipo_tot", "minuti_netti_tot",
+    "durata_prog_tot", "corse_con_durata",
     "count", "minuti_ritardo", "minuti_anticipo",
 ])
 
@@ -493,6 +494,20 @@ def build_metrics(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     for k in (5, 10, 15, 30, 60):
         df[f"oltre_{k}"] = (valid & (dev >= k)).astype("int8")
 
+    # Durata programmata della corsa. Serve per un indicatore diverso dal
+    # ritardo: i minuti che l'orario impiega per chilometro dicono quanto e'
+    # lenta la linea, a prescindere da quanto e' puntuale. Una tratta puo'
+    # essere sempre in orario e comunque richiedere il doppio del tempo per
+    # chilometro di un'altra, e quella e' inefficienza dell'infrastruttura, non
+    # del servizio.
+    #
+    # La finestra scarta le durate impossibili: negative dove gli orari sono
+    # incoerenti, oltre le ventiquattro ore dove la data programmata e' quella
+    # sbagliata.
+    durata = (df["dt_arrivo_prog"] - df["dt_partenza_prog"]).dt.total_seconds() / 60.0
+    df["durata_prog_min"] = durata.where((durata > 0) & (durata <= 1440))
+    df["ha_durata"] = df["durata_prog_min"].notna()
+
     df["minuti_ritardo"] = df["ritardo_min"]
     df["minuti_anticipo"] = (-dev).clip(lower=0)
     df["minuti_netti"] = df["minuti_ritardo"].fillna(0) - df["minuti_anticipo"].fillna(0)
@@ -537,6 +552,8 @@ def agg_core(group_cols: List[str], df: pd.DataFrame) -> pd.DataFrame:
         oltre_15=("oltre_15", "sum"),
         oltre_30=("oltre_30", "sum"),
         oltre_60=("oltre_60", "sum"),
+        durata_prog_tot=("durata_prog_min", "sum"),
+        corse_con_durata=("ha_durata", "sum"),
         minuti_ritardo_tot=("minuti_ritardo", "sum"),
         minuti_anticipo_tot=("minuti_anticipo", "sum"),
         minuti_netti_tot=("minuti_netti", "sum"),

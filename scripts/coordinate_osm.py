@@ -337,26 +337,192 @@ def coordinate_per_nomi(nomi: list, percorso: str = CACHE_OSM
         c = risolvi_per_somiglianza(k, per_nome, risolti)
         if c:
             out[k] = c
+
+    out, cambi = ricolloca_per_rete(out, per_nome)
+    for c in cambi:
+        print(f"  ricollocata {c['nome']} -> {c['verso']}: il vicino piu' "
+              f"prossimo era a {c['km_prima']:.0f} km, ora il piu' lontano dei "
+              f"{c['vicini']} e' a {c['km_dopo']:.0f} km "
+              f"({c['spostamento_km']:.0f} km di spostamento)")
     return out
+
+
+# Sotto questa distanza dal vicino piu' prossimo la stazione e' plausibilmente al
+# suo posto e non si tocca: e' la mediana piu' un margine largo (mediana 11 km,
+# novantesimo percentile 29 km sulle 1.466 stazioni valutabili).
+_PLAUSIBILE_ENTRO_KM = 30.0
+# Quanto lontano puo' stare l'alternativa dal vicino piu' lontano: deve essere
+# una stazione dentro il grappolo, non un'altra ipotesi lontana.
+_ALTERNATIVA_ENTRO_KM = 35.0
+_MIN_VICINI = 2
+
+
+def _e_troncamento(chiave: str, altro: str) -> bool:
+    """Vero se `chiave` e' `altro` a cui la sorgente ha tolto dei pezzi.
+
+    La sorgente scrive "PALAZZOLO" per Palazzolo Milanese e "S LAZZARO" per
+    Reggio San Lazzaro: il nome c'e' tutto, gli manca la citta'. I token di
+    `chiave` devono comparire in `altro` nello stesso ordine.
+
+    Serve una lunghezza minima perche' con nomi cortissimi il contenimento non
+    dice niente: "S" sta in qualunque nome che contenga un santo.
+    """
+    tk, ta = chiave.split(), altro.split()
+    if not tk or len(chiave.replace(" ", "")) < 5 or len(ta) <= len(tk):
+        return False
+    i = 0
+    for t in tk:
+        while i < len(ta) and ta[i] != t:
+            i += 1
+        if i >= len(ta):
+            return False
+        i += 1
+    return True
+
+
+def ricolloca_per_rete(risolti: Dict[str, Tuple[float, float]],
+                       per_nome: Dict[str, list],
+                       vicini: Optional[Dict[str, list]] = None
+                       ) -> Tuple[Dict[str, Tuple[float, float]], list]:
+    """Ultimo controllo: il nome ha vinto, ma la rete dice un'altra cosa.
+
+    I quattro passaggi precedenti scelgono in ordine di sicurezza del *nome*, e
+    il nome identico vince su tutto. E' giusto quasi sempre, ma quando la
+    sorgente tronca produce l'errore peggiore: esiste un nodo OSM che si chiama
+    esattamente "Palazzolo", in provincia di Napoli, e vince sul nodo
+    "Palazzolo Milanese" che e' la stazione vera. Il confronto esatto e'
+    soddisfatto e nessuno dei controlli successivi viene interrogato.
+
+    Qui il criterio si ribalta: conta la rete, non il nome. Ma non basta dire
+    "e' lontana dai suoi vicini", perche' lontano non vuol dire sbagliato:
+    Domodossola dista 43 km dalla stazione piu' prossima con cui condivide
+    treni, ed e' al suo posto. Con una soglia sulla distanza veniva spostata a
+    Milano, dove esiste una stazione Ferrovie Nord che si chiama Domodossola e
+    dove va la maggior parte dei suoi treni. Centoventimila corse riposizionate
+    per un criterio che sembrava ragionevole.
+
+    Il criterio che tiene e' la dominanza: si sostituisce solo se l'alternativa
+    e' piu' vicina a *ogni* vicino di quanto lo sia il vicino piu' prossimo
+    dell'attuale. Non "in media meglio": meglio in ogni singolo confronto.
+    Palazzolo (Napoli) sta a 653 km dalla piu' vicina fra Milano Rogoredo e
+    Milano Bovisa, mentre Palazzolo Milanese sta entro 20 km da entrambe. Per
+    Domodossola questo non vale, perche' la Domodossola milanese e' lontanissima
+    da Verbania e da Brig, e quindi non viene toccata.
+    """
+    if vicini is None:
+        vicini = _vicini_di_rete()
+    if not vicini:
+        return risolti, []
+
+    # I vicini si leggono da una fotografia iniziale: altrimenti l'esito
+    # dipenderebbe dall'ordine con cui si scorrono i nomi, e una stazione
+    # ricollocata cambierebbe il giudizio su quelle esaminate dopo.
+    base = dict(risolti)
+    cambi = []
+    for k, punto in base.items():
+        punti_vicini = [base[v] for v in (vicini.get(k) or [])
+                        if v in base and v != k]
+        if len(punti_vicini) < _MIN_VICINI:
+            continue
+        d_ora = min(distanza_km(punto[0], punto[1], p[0], p[1]) for p in punti_vicini)
+        if d_ora <= _PLAUSIBILE_ENTRO_KM:
+            continue
+
+        candidati = []
+        for nome_osm, pts in per_nome.items():
+            if nome_osm == k:
+                continue
+            if _combacia_per_token(k, nome_osm) or _e_troncamento(k, nome_osm):
+                candidati.extend((p, nome_osm) for p in pts)
+        if not candidati:
+            continue
+
+        # Il candidato si giudica sul vicino piu' *lontano*: deve stare dentro il
+        # grappolo di stazioni con cui la nostra condivide treni, non solo
+        # accanto a una di loro.
+        def peggior_vicino(c) -> float:
+            return max(distanza_km(c[0][0], c[0][1], p[0], p[1]) for p in punti_vicini)
+
+        migliore, nome_scelto = min(candidati, key=peggior_vicino)
+        d_peggiore = peggior_vicino((migliore, nome_scelto))
+        if d_peggiore > _ALTERNATIVA_ENTRO_KM or d_peggiore >= d_ora:
+            continue
+
+        cambi.append({"nome": k, "verso": nome_scelto,
+                      "km_prima": d_ora, "km_dopo": d_peggiore,
+                      "spostamento_km": distanza_km(punto[0], punto[1],
+                                                    migliore[0], migliore[1]),
+                      "vicini": len(punti_vicini)})
+        risolti[k] = migliore
+
+    return risolti, cambi
+
+
+def ricolloca_anagrafica(dim: "pd.DataFrame") -> Tuple["pd.DataFrame", list]:
+    """Applica il controllo di dominanza all'anagrafica completa del gold.
+
+    Serve un secondo punto di applicazione perche' `coordinate_per_nomi` vede
+    solo i nomi che gli vengono passati, e le coordinate dell'anagrafica non
+    arrivano tutte da li': molte vengono dalla cache per codice o dal confronto
+    di nome fra codici diversi. "PALAZZOLO" e' esattamente uno di questi casi,
+    e restava in provincia di Napoli con 3.404 corse verso Milano.
+
+    Lavora sui nomi normalizzati: tutti i codici che condividono un nome si
+    spostano insieme, come e' giusto dato che sono la stessa stazione.
+    """
+    if dim.empty or "lat" not in dim.columns:
+        return dim, []
+
+    chiavi = dim["nome_stazione"].astype(str).map(normalize_station_name)
+    coord: Dict[str, Tuple[float, float]] = {}
+    for k, la, lo in zip(chiavi, dim["lat"], dim["lon"]):
+        if k and k not in coord and pd.notna(la) and pd.notna(lo):
+            coord[k] = (float(la), float(lo))
+
+    nomi = {str(c): k for c, k in zip(dim["cod_stazione"].astype(str), chiavi)}
+    vicini = _vicini_di_rete(nomi)
+    if not vicini:
+        return dim, []
+
+    _, cambi = ricolloca_per_rete(coord, candidati_osm(), vicini)
+    if not cambi:
+        return dim, []
+
+    dim = dim.copy()
+    for c in cambi:
+        nuovo = coord[c["nome"]]
+        maschera = chiavi == c["nome"]
+        dim.loc[maschera, "lat"] = nuovo[0]
+        dim.loc[maschera, "lon"] = nuovo[1]
+        c["codici"] = int(maschera.sum())
+    return dim, cambi
 
 
 _VICINI_CACHE: Optional[Dict[str, list]] = None
 
 
-def _vicini_di_rete() -> Dict[str, list]:
-    """Per ogni stazione, i nomi normalizzati delle stazioni a cui e' collegata."""
+def _vicini_di_rete(nomi: Optional[Dict[str, str]] = None) -> Dict[str, list]:
+    """Per ogni stazione, i nomi normalizzati delle stazioni a cui e' collegata.
+
+    `nomi` permette di passare la corrispondenza codice -> nome da fuori: serve
+    quando l'anagrafica del gold non e' ancora stata scritta su disco, cioe'
+    proprio mentre la si sta costruendo.
+    """
     global _VICINI_CACHE
-    if _VICINI_CACHE is not None:
+    da_disco = nomi is None
+    if da_disco and _VICINI_CACHE is not None:
         return _VICINI_CACHE
 
     import glob
-    _VICINI_CACHE = {}
     files = sorted(glob.glob(os.path.join("data", "gold", "parts",
                                           "od_mese_categoria", "*.parquet")))
     if not files:
-        return _VICINI_CACHE
+        if da_disco:
+            _VICINI_CACHE = {}
+        return {}
 
-    nomi = _nomi_stazione()
+    if nomi is None:
+        nomi = _nomi_stazione()
     coppie: Dict[str, set] = {}
     for f in files:
         try:
@@ -369,8 +535,10 @@ def _vicini_di_rete() -> Dict[str, list]:
                 continue
             coppie.setdefault(na, set()).add(nb)
             coppie.setdefault(nb, set()).add(na)
-    _VICINI_CACHE = {k: sorted(v) for k, v in coppie.items()}
-    return _VICINI_CACHE
+    fuori = {k: sorted(v) for k, v in coppie.items()}
+    if da_disco:
+        _VICINI_CACHE = fuori
+    return fuori
 
 
 def _nomi_stazione() -> Dict[str, str]:
@@ -448,8 +616,11 @@ def audit_coerenza_rete(soglia_km: float = 100.0) -> pd.DataFrame:
         if k not in coord:
             continue
         punti = [coord[v] for v in (vicini.get(k) or []) if v in coord and v != k]
-        if len(punti) < 3:
-            # Con pochi collegamenti non c'e' abbastanza contesto per giudicare.
+        if len(punti) < 2:
+            # Con un solo collegamento non c'e' contesto per giudicare. Con due
+            # ce n'e' abbastanza: Palazzolo aveva esattamente due vicini,
+            # entrambi a Milano, ed era in provincia di Napoli. Chiedere tre
+            # vicini la lasciava fuori dal controllo.
             continue
         d = min(distanza_km(r["lat"], r["lon"], p[0], p[1]) for p in punti)
         if d > soglia_km:

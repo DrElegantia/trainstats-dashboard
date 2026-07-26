@@ -46,3 +46,9 @@ docs/data/*.csv
 docs/data/manifest.json
 
 !.gitkeep
+
+# Cache rigenerabili delle distanze: si riscaricano, non si versionano.
+# I feed GTFS sono 386 MB di zip dei gestori, la geometria dei binari 21 MB di
+# risposta Overpass. Gli esiti (distanze_*.csv, km_tratte.csv) sono versionati.
+data/gtfs/
+data/stations/osm_binari.json

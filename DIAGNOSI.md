@@ -324,6 +324,57 @@ L'audit e' entrato negli invarianti verificati a ogni ricostruzione, con una
 soglia di mille corse per non far fallire la pipeline su fermate marginali dove
 la rete non e' un riferimento.
 
+### 3.12.1 Il nome esatto vinceva sulla stazione giusta
+
+Emerso costruendo la classifica per chilometro, che ha reso visibile un errore
+che la mappa non mostrava: la tratta Milano Rogoredo-Palazzolo risultava di 765
+km percorsi in 43 minuti, cioe' 1.070 km/h.
+
+La causa e' l'ordine di precedenza fra i criteri di riconoscimento. La sorgente
+tronca i nomi: scrive "PALAZZOLO" per Palazzolo Milanese e "S LAZZARO" per
+Reggio San Lazzaro. OpenStreetMap ha un nodo che si chiama esattamente
+"Palazzolo", in provincia di Napoli, e il confronto esatto lo accettava senza
+mai interrogare i criteri successivi. Il nome combaciava; la stazione era
+un'altra.
+
+Il controllo aggiunto ribalta la precedenza: dopo i quattro passaggi sui nomi si
+guarda la rete, e se un'altra collocazione plausibile del nome sta dentro il
+grappolo di stazioni con cui la nostra condivide treni reali, quella vince sul
+nome identico.
+
+Il criterio non e' una soglia sulla distanza. Con una soglia il controllo
+spostava **Domodossola** a Milano, dove esiste una stazione Ferrovie Nord con lo
+stesso nome e dove va la maggior parte dei suoi treni: 122.397 corse
+riposizionate per un criterio che sembrava ragionevole. Domodossola dista 43 km
+dalla stazione piu' prossima con cui condivide corse, ed e' al suo posto: lontano
+non vuol dire sbagliato.
+
+Il criterio che tiene e' la dominanza. Si sostituisce solo se l'alternativa e'
+piu' vicina a **ogni** vicino di quanto lo sia il vicino piu' prossimo
+dell'attuale: non "meglio in media", meglio in ogni singolo confronto. Palazzolo
+di Napoli sta a 652 km dalla piu' vicina fra Milano Rogoredo e Milano Bovisa,
+mentre Palazzolo Milanese sta entro 18 km da entrambe. Per Domodossola la
+condizione non si verifica, perche' la Domodossola milanese e' lontanissima da
+Verbania e da Premosello, e quindi non viene toccata.
+
+| stazione | era | e' | corse |
+|---|---|---|---|
+| PALAZZOLO | provincia di Napoli, 652 km dai suoi vicini | Palazzolo Milanese | 3.404 |
+| GRANAROLO | Genova, 236 km dai suoi vicini | Granarolo Faentino | 24 |
+| S LAZZARO | San Lazzaro di Savena, 66 km | Reggio San Lazzaro | 6.941 |
+
+Il controllo gira in due punti, perche' le coordinate arrivano da percorsi
+diversi: dentro `coordinate_per_nomi` per quelle risolte su OpenStreetMap
+(Palazzolo, Granarolo) e su tutta l'anagrafica finita per quelle che vengono
+dalla cache per codice, che quel modulo non attraversa (San Lazzaro).
+
+L'audit ora giudica anche le stazioni con due soli collegamenti: chiederne tre
+lasciava Palazzolo fuori dal controllo, ed era il caso peggiore che avessimo.
+Il residuo, censito per intero: 29 stazioni distanti oltre 60 km dal vicino piu'
+prossimo, per **736 corse su 18,7 milioni**. Diverse sono corrette per come e'
+fatto il servizio, non sbagliate: Reggio Emilia AV Mediopadana ha per vicini
+Milano e Bologna, e 116 km dal piu' prossimo sono la sua posizione vera.
+
 ### 3.13 I grafici mensili scavalcavano i mesi mancanti
 
 Emerso pubblicando lo storico, e non e' un difetto dei dati ma di come
@@ -762,3 +813,90 @@ Cesate, `N00019` Tradate). Nessuna stazione perde un codice ufficiale `S`, e la
 copertura della mappa resta invariata (97,95% contro 97,96%). Le stazioni
 storiche e quelle odierne finiscono nella stessa identita': Milano Centrale e'
 `S01700` su tutti i 49 mesi, con zero nomi associati a piu' di un codice.
+
+---
+
+## 7. I chilometri per tratta e la lentezza della rete
+
+La sorgente dice quanto un treno ritarda, non quanta strada fa. Senza i
+chilometri non si distingue una linea lenta da un servizio gestito male, ed e'
+la distinzione che serve per dire dove la rete non funziona.
+
+### 7.1 Da dove vengono i chilometri
+
+Quattro fonti provate, in ordine di autorevolezza dichiarata e verificata:
+
+| fonte | copertura | scarto mediano contro il dato del gestore |
+|---|---|---|
+| **RINF**, registro dell'infrastruttura (Reg. UE 2019/777) | 11.475 tratte | **0,05%**, 95,8% entro il 5% |
+| GTFS, `shape_dist_traveled` del gestore | 44 tratte adiacenti | e' il dato del gestore |
+| grafo dei binari OpenStreetMap | 6.788 tratte | 1,18% |
+| prontuario distanze FS | verifica | 2,05% |
+
+Il RINF divide la rete in *section of line*, tratte fra due punti operativi
+adiacenti, ognuna con `lengthOfSectionOfLine` in chilometri: sono i lati di un
+grafo, e la distanza fra due stazioni qualsiasi e' il cammino minimo su quei
+lati. 3.661 sezioni italiane, 3.476 lati, 3.184 punti operativi.
+
+I GTFS coprono poco perche' quasi nessun gestore pubblica la progressiva: su 75
+feed solo 3 la compilano, e Trenord ha 4.358 corse ferroviarie senza alcuna
+geometria. Sono comunque il **metro di misura**: sono l'unico dato di distanza
+che i gestori pubblichino di persona, e le 254 tratte in cui esiste hanno
+permesso di misurare l'errore delle altre fonti invece di dichiararlo.
+
+Una avvertenza che ERA mette per iscritto: la lunghezza della sezione e' la
+distanza teorica fra i punti centrali dei due punti operativi, non la
+sottrazione fra due progressive chilometriche. Per una tabella
+origine-destinazione va bene la prima; per la chilometrica storica e
+amministrativa servirebbero i Fascicoli Linea di RFI.
+
+Ogni tratta porta scritto da dove viene il suo numero e quanto ci si puo'
+fidare, invece di consegnare una colonna di chilometri come se fossero tutti
+equivalenti. Il controllo che scarta i casi rotti senza avere una seconda fonte
+e' il rapporto con la linea d'aria: una ferrovia reale e' piu' lunga della
+retta, ma non tre volte tanto. Grosseto-Montepescali, due stazioni a dodici
+chilometri, risultava 339 km perche' al grafo mancava un raccordo e il cammino
+girava intorno.
+
+**Risultato: 18.689 tratte su 18.929 utilizzabili, il 98,64% del traffico, di
+cui l'85,94% con la distanza ufficiale del registro.** Le 240 scartate non
+vengono riempite con un numero plausibile: restano vuote.
+
+### 7.2 I tre indicatori, e perche' servono tutti e tre
+
+Il ritardo al chilometro da solo non dice se una linea funziona: dice quanto il
+servizio si scosta dal **proprio** orario, e un orario abbondante assorbe i
+ritardi senza che nessuno li veda. Affiancati:
+
+- **durata programmata al km**: minuti che l'orario concede per chilometro. E'
+  la lentezza strutturale, quella del binario unico e delle curve. Non dipende
+  da come e' andata quel giorno.
+- **ritardo al km**: minuti che il servizio aggiunge a quell'orario. E' la
+  lentezza gestionale.
+- **velocita' commerciale**: la durata al km letta al contrario, in km/h.
+  Stessa informazione, unita' leggibile.
+
+Serve un pavimento sulla lunghezza, altrimenti la classifica misura le manovre
+invece del viaggio: senza vincolo il podio delle piu' lente e' fatto di navette
+di due chilometri, dove la sosta pesa piu' del percorso. Con almeno 300 corse e
+30 km restano 1.203 tratte, per 15,3 milioni di corse.
+
+Mediana: **104,9 minuti programmati per 100 km, cioe' 57,2 km/h**, con 3,31
+minuti di ritardo per 100 km. Gli estremi vanno da 25,1 km/h (Eboli-Nocera
+Inferiore, 40,8 km in 97 minuti) a 158,7 km/h (Firenze-Milano).
+
+I due problemi sono distinti e si vedono separati. Castellammare di Stabia-Napoli
+Campi Flegrei e' fra le piu' lente d'orario (27,3 km/h) con un ritardo fra i piu'
+bassi (3,0 minuti per 100 km): quella linea e' lenta per come e' fatta, il
+servizio rispetta l'orario che ha. Chiasso-Monza viaggia a 47,3 km/h
+programmati ma accumula 55,7 minuti di ritardo per 100 km: l'orario non e' il
+problema.
+
+### 7.3 Cosa ha trovato la classifica che la mappa non mostrava
+
+Il rapporto fra chilometri e minuti e' un controllo di plausibilita' che le
+metriche precedenti non avevano. Milano Rogoredo-Palazzolo risultava 765 km in
+43 minuti, cioe' 1.070 km/h: non un treno veloce, una stazione nel posto
+sbagliato (vedi 3.12.1). Il controllo e' rimasto dentro `indicatori_km` come
+rete di sicurezza permanente, con la soglia a 200 km/h di media programmata:
+oggi la piu' alta e' Firenze-Milano a 158,7 e nessuna tratta la supera.

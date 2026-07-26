@@ -140,6 +140,22 @@ def write_json(path: str, obj: Dict[str, Any]) -> None:
 # raggruppamento per nome le tratta come stazioni diverse, e le statistiche di
 # 810.418 corse (il 6,5% del totale) finivano spezzate in due.
 _ABBREVIATIONS = [
+    # Sigle di citta' usate dalla sorgente solo su alcune stazioni, che percio'
+    # finivano contate due volte: "MI P GENOVA" con 77.322 corse e "MILANO
+    # PORTA GENOVA" con 11.411 erano la stessa stazione in due voci, e cosi'
+    # "NOVATE M SE" con "NOVATE MILANESE" e "PALAZZOLO M SE" con "PALAZZOLO
+    # MILANESE". Le sigle valgono solo a inizio nome: "MI" in mezzo a un nome
+    # non e' Milano.
+    (r"^MI\b", "MILANO"),
+    (r"^BS\b", "BRESCIA"),
+    (r"\bM\.?\s?SE\b", "MILANESE"),
+    # "P" davanti al nome di una porta cittadina: si elencano i casi reali
+    # invece di espandere qualunque P, che altrove significa altro (i "P.C."
+    # sono posti di comunicazione, non porte).
+    (r"\bP\s+(GENOVA|GARIBALDI|GAR|VITTORIA|ROMANA|SUSA|VOLTA)\b", r"PORTA \1"),
+    (r"\bGAR\b", "GARIBALDI"),
+    (r"\bPIAZ\b", "PIAZZALE"),
+    (r"\bSOTT\b", "SOTTERRANEA"),
     (r"\bC\.?\s?L\.?E\.?\b", "CENTRALE"),
     (r"\bCENT\.?\b", "CENTRALE"),
     (r"\bS\.?M\.?N\.?\b", "S MARIA NOVELLA"),

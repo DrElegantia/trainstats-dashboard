@@ -388,6 +388,22 @@ def save_station_dim(df: pd.DataFrame) -> None:
     # Deduplica per nome prima di salvare
     df = _deduplicate_by_name(df)
 
+    # Ultimo controllo, e il piu' severo: non sui nomi ma sui treni. Una
+    # stazione che condivide corse solo con stazioni lontanissime da lei e'
+    # un omonimo, e va spostata dove la rete dice che sta. Va qui e non in
+    # coordinate_osm perche' molte coordinate arrivano dalla cache per codice,
+    # che quel modulo non attraversa.
+    try:
+        from .coordinate_osm import ricolloca_anagrafica
+        df, cambi = ricolloca_anagrafica(df)
+        for c in cambi:
+            print(f"  Ricollocata {c['nome']} -> {c['verso']} "
+                  f"({c['spostamento_km']:.0f} km, {c['codici']} codici): il vicino "
+                  f"piu' prossimo era a {c['km_prima']:.0f} km, ora il piu' "
+                  f"lontano dei {c['vicini']} e' a {c['km_dopo']:.0f} km")
+    except Exception as e:
+        print(f"Controllo di coerenza con la rete non eseguito ({e})")
+
     output_path = gold_dir / "stations_dim.csv"
     df.to_csv(output_path, index=False, encoding="utf-8")
 
