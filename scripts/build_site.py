@@ -165,6 +165,21 @@ def copy_root_files(target_dir: Path) -> None:
             print(f"Copied capoluoghi_provincia.csv from {src}")
             break
 
+    # La classifica per chilometro. E' l'unica tabella pubblicata che non e'
+    # filtrabile: i chilometri non dipendono dall'anno o dalla categoria, e la
+    # durata media di una tratta calcolata su tre corse non vorrebbe dire nulla.
+    # Copre l'intero periodo e lo dichiara nella scheda.
+    km = Path("data") / "stations" / "indicatori_km.csv"
+    if km.exists():
+        colonne = ["partenza", "arrivo", "km", "qualita_km", "corse",
+                   "durata_media_min", "ritardo_medio_min", "min_per_100km",
+                   "ritardo_per_100km", "km_h_programmati", "km_h_effettivi"]
+        d = pd.read_csv(km)
+        d = d[[c for c in colonne if c in d.columns]]
+        # Due decimali bastano: il file scende da 200 a 90 KB.
+        d.to_csv(target_dir / "indicatori_km.csv", index=False, float_format="%.2f")
+        print(f"Wrote indicatori_km.csv ({len(d)} tratte)")
+
 
 def main() -> None:
     target = Path("docs") / "data"
@@ -239,6 +254,8 @@ def main() -> None:
     }
 
     copy_root_files(target)
+    if (target / "indicatori_km.csv").exists():
+        manifest["km_file"] = "indicatori_km.csv"
     (target / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )

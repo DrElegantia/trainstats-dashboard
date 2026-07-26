@@ -948,16 +948,24 @@ function clearMarkers() {
  */
 function avviaMappaDifferita() {
   const mapEl = document.getElementById("map");
-  if (!mapEl || isCardCollapsed(mapEl)) return;
+  const kmEl = document.getElementById("chartKm");
+  const vuoleMappa = mapEl && !isCardCollapsed(mapEl);
+  const vuoleKm = kmEl && !isCardCollapsed(kmEl);
+  if (!vuoleMappa && !vuoleKm) return;
 
   const parti = function() {
-    initMap();
-    ensureStationsData().then(function() {
-      renderMap();
-      // Leaflet calcola le dimensioni al momento della creazione: se il
-      // contenitore era ancora in fase di disegno le tessere restano tagliate.
-      setTimeout(function() { try { state.map.invalidateSize(); } catch {} }, 200);
-    });
+    if (vuoleMappa) {
+      initMap();
+      ensureStationsData().then(function() {
+        renderMap();
+        // Leaflet calcola le dimensioni al momento della creazione: se il
+        // contenitore era ancora in fase di disegno le tessere restano tagliate.
+        setTimeout(function() { try { state.map.invalidateSize(); } catch {} }, 200);
+      });
+    }
+    // La classifica per chilometro e' un file di un centinaio di KB: sta nella
+    // stessa finestra di attesa della mappa senza pesare.
+    if (vuoleKm) ensureKmData().then(renderKmRanking);
   };
 
   if (typeof requestIdleCallback === "function") requestIdleCallback(parti, { timeout: 1500 });
@@ -2412,6 +2420,11 @@ function initCollapsibleCards() {
         else if (id === "chartStationsTop10") {
           ensureStationsData().then(renderStationsTop10);
         }
+        else if (id === "chartKm") {
+          // La tabella per chilometro e' un file a parte, indipendente dai
+          // filtri: si scarica alla prima apertura e non si ricalcola piu'.
+          ensureKmData().then(renderKmRanking);
+        }
       }
     });
   });
@@ -2421,6 +2434,121 @@ function initStationsMetricSel() {
   const sel = document.getElementById("stationsMetricSel");
   if (!sel) return;
   sel.onchange = function() { renderStationsTop10(); };
+}
+
+/* ────────────────── tratte per chilometro ────────────────── */
+
+/**
+ * La classifica per chilometro. Le tre metriche rispondono a domande diverse e
+ * vanno lette insieme:
+ *
+ *   min_per_100km      minuti che l'orario concede per chilometro. E' la
+ *                      lentezza della rete, e non dipende da come e' andata
+ *                      quel giorno.
+ *   ritardo_per_100km  minuti che il servizio aggiunge a quell'orario. E' la
+ *                      lentezza della gestione.
+ *   km_h_programmati   la prima letta al contrario, in unita' leggibili.
+ *
+ * Sulle 1.203 tratte pubblicate la correlazione fra le prime due e' 0,28: se
+ * bastasse il ritardo per capire dove la rete non funziona, sarebbe vicina a 1.
+ */
+const METRICHE_KM = {
+  min_per_100km:     { titolo: "Minuti d'orario per 100 km",     decrescente: true,  decimali: 0 },
+  ritardo_per_100km: { titolo: "Minuti di ritardo per 100 km",   decrescente: true,  decimali: 1 },
+  // Qui il caso peggiore e' il valore piu' basso, quindi l'ordine si inverte:
+  // in cima deve restare la tratta messa peggio, come nelle altre due.
+  km_h_programmati:  { titolo: "Velocità commerciale (km/h)",    decrescente: false, decimali: 0 }
+};
+
+const QUANTE_TRATTE_KM = 15;
+
+function getKmMetric() {
+  const sel = document.getElementById("kmMetricSel");
+  const v = sel ? sel.value : "min_per_100km";
+  return METRICHE_KM[v] ? v : "min_per_100km";
+}
+
+async function ensureKmData() {
+  if (state.data.km && state.data.km.length) return state.data.km;
+  const file = (state.manifest && state.manifest.km_file) || "indicatori_km.csv";
+  const t = await fetchTextAny([
+    ...candidateFilePaths(ensureTrailingSlash(state.dataBase || "data/"), file),
+    ...candidateFilePaths("data/", file)
+  ]);
+  state.data.km = t ? parseCSV(t) : [];
+  return state.data.km;
+}
+
+function titoloTratta(r) {
+  const a = String(r.partenza || "").trim();
+  const b = String(r.arrivo || "").trim();
+  return titleCase(a) + " – " + titleCase(b);
+}
+
+function titleCase(s) {
+  return String(s).toLowerCase().replace(/(^|[\s'’-])([a-zà-ù])/g, (m, p, c) => p + c.toUpperCase());
+}
+
+function renderKmRanking() {
+  const chart = document.getElementById("chartKm");
+  if (!chart || isCardCollapsed(chart)) return;
+  if (typeof Plotly !== "object") return;
+
+  const righe = (state.data.km || []).filter((r) => Number.isFinite(toNum(r.km)) && toNum(r.km) > 0);
+  const nota = document.getElementById("kmNote");
+  if (!righe.length) {
+    safePlotlyReact(chart, [], {}, { displayModeBar: false, responsive: true });
+    if (nota) nota.textContent = "Dati per chilometro non disponibili in questa build.";
+    return;
+  }
+
+  const metrica = getKmMetric();
+  const cfg = METRICHE_KM[metrica];
+  const ordinate = righe.slice().sort((a, b) =>
+    cfg.decrescente ? toNum(b[metrica]) - toNum(a[metrica])
+                    : toNum(a[metrica]) - toNum(b[metrica]));
+  // Plotly disegna le barre orizzontali dal basso: si inverte per avere il
+  // caso peggiore in cima.
+  const top = ordinate.slice(0, QUANTE_TRATTE_KM).reverse();
+
+  const etichette = top.map(titoloTratta);
+  const valori = top.map((r) => toNum(r[metrica]));
+  const dettaglio = top.map((r) =>
+    `${toNum(r.km).toFixed(0)} km, ${toNum(r.durata_media_min).toFixed(0)} min d'orario, ` +
+    `${toNum(r.ritardo_medio_min).toFixed(1)} min di ritardo, ` +
+    `${toNum(r.km_h_programmati).toFixed(0)} km/h, ${fmtInt(toNum(r.corse))} corse`);
+
+  safePlotlyReact(chart,
+    [{
+      x: valori, y: etichette, type: "bar", orientation: "h", name: cfg.titolo,
+      marker: { color: "rgba(0,115,230,0.70)" },
+      // hovertext, non text: con `text` Plotly stampa la riga dentro la barra e
+      // il grafico diventa un muro di cifre illeggibile.
+      hovertext: dettaglio, textposition: "none",
+      hovertemplate: "<b>%{y}</b><br>%{x:.1f}<br>%{hovertext}<extra></extra>"
+    }],
+    {
+      margin: isMobile() ? { l:10, r:10, t:10, b:40 } : { l:230, r:30, t:10, b:50 },
+      xaxis: { title: isMobile() ? "" : cfg.titolo, rangemode: "tozero" },
+      yaxis: { automargin: true },
+      paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font: mobileFont()
+    },
+    { displayModeBar: false, responsive: true }
+  );
+
+  if (nota) {
+    const ufficiali = righe.filter((r) => String(r.qualita_km) === "ufficiale").length;
+    nota.textContent =
+      `${fmtInt(righe.length)} tratte con almeno 300 corse e 30 km, ` +
+      `${Math.round(100 * ufficiali / righe.length)}% con la distanza ufficiale del RINF. ` +
+      "Sotto i 30 km il rapporto per chilometro misura le manovre invece del viaggio.";
+  }
+}
+
+function initKmMetricSel() {
+  const sel = document.getElementById("kmMetricSel");
+  if (!sel) return;
+  sel.onchange = function() { ensureKmData().then(renderKmRanking); };
 }
 
 /* ────────────────── filter badges ────────────────── */
@@ -2717,6 +2845,7 @@ async function loadAll() {
   ensureHistToggle();
   initCollapsibleCards();
   initStationsMetricSel();
+  initKmMetricSel();
 
   // On mobile, collapse all cards by default to reduce initial rendering cost
   if (isMobile()) {

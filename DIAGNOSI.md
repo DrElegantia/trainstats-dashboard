@@ -892,6 +892,14 @@ servizio rispetta l'orario che ha. Chiasso-Monza viaggia a 47,3 km/h
 programmati ma accumula 55,7 minuti di ritardo per 100 km: l'orario non e' il
 problema.
 
+La classifica sta sulla dashboard, nella scheda "Tratte per chilometro
+percorso", con le tre metriche selezionabili e il caso peggiore sempre in cima
+(per la velocita' commerciale l'ordine si inverte, perche' li' il peggio e' il
+valore piu' basso). E' l'unica vista che non risponde ai filtri, e lo dichiara:
+i chilometri non dipendono dall'anno o dalla categoria, e una durata media
+calcolata su tre corse non vorrebbe dire niente. Il file pubblicato e'
+`indicatori_km.csv`, un centinaio di KB.
+
 ### 7.3 Cosa ha trovato la classifica che la mappa non mostrava
 
 Il rapporto fra chilometri e minuti e' un controllo di plausibilita' che le

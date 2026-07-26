@@ -292,6 +292,27 @@
     </div>
   </section>
 
+  <section class="panel">
+    <div class="card collapsible" data-view="km">
+      <div class="card-header">
+        <h2>Tratte per chilometro percorso</h2>
+        <div class="card-header-controls">
+          <select id="kmMetricSel" class="card-select">
+            <option value="min_per_100km">Minuti d&rsquo;orario / 100 km</option>
+            <option value="ritardo_per_100km">Minuti di ritardo / 100 km</option>
+            <option value="km_h_programmati">Velocit&agrave; commerciale</option>
+          </select>
+          <button class="card-toggle" aria-label="Espandi/Collassa">&#9660;</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="card-desc">Quanto tempo l&rsquo;orario concede per chilometro, cio&egrave; la lentezza della rete, e quanto il servizio ci aggiunge sopra. Sono due cose diverse: una linea pu&ograve; essere lenta per come &egrave; fatta oppure veloce e gestita male. Distanze dal RINF, il registro europeo dell&rsquo;infrastruttura. <strong>Questa vista copre l&rsquo;intero periodo e non risente dei filtri</strong>: le distanze non dipendono dall&rsquo;anno e una durata media su poche corse non direbbe nulla.</div>
+        <div id="chartKm" class="chart chart--tall"></div>
+        <div class="note" id="kmNote"></div>
+      </div>
+    </div>
+  </section>
+
   <footer class="site-footer">
     Realizzato da <strong>Umberto Bertonelli</strong><br>
     <a href="https://www.umbertobertonelli.it/" target="_blank" rel="noopener">umbertobertonelli.it</a>
@@ -301,6 +322,6 @@
 
   <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="assets/app.js?v=9ae2f9262c"></script>
+  <script src="assets/app.js?v=7720107ddf"></script>
 </body>
 </html>
