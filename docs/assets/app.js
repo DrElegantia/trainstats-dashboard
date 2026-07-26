@@ -428,6 +428,17 @@ function normalizeText(s) {
  * forme collassano su un unico token.
  */
 var _STATION_ABBREV = [
+  // Deve restare allineato a _ABBREVIATIONS in scripts/utils.py.
+  // Sigle di citta' e di porta: la sorgente le usa solo su alcune stazioni, che
+  // percio' risultavano contate due volte ("MI P GENOVA" e "MILANO PORTA
+  // GENOVA" erano due voci per la stessa stazione).
+  [/^MI\b/, "MILANO"],
+  [/^BS\b/, "BRESCIA"],
+  [/\bM\.?\s?SE\b/, "MILANESE"],
+  [/\bP\s+(GENOVA|GARIBALDI|GAR|VITTORIA|ROMANA|SUSA|VOLTA)\b/, "PORTA $1"],
+  [/\bGAR\b/, "GARIBALDI"],
+  [/\bPIAZ\b/, "PIAZZALE"],
+  [/\bSOTT\b/, "SOTTERRANEA"],
   [/\bC\.?\s?L\.?E\.?\b/g, "CENTRALE"],
   [/\bCENT\.?\b/g, "CENTRALE"],
   [/\bS\.?M\.?N\.?\b/g, "S MARIA NOVELLA"],
@@ -923,6 +934,34 @@ function clearMarkers() {
   if (!state.map) return;
   for (const m of state.markers) { try { state.map.removeLayer(m); } catch {} }
   state.markers = [];
+}
+
+/**
+ * La mappa e' aperta all'arrivo sulla pagina, ma non viene costruita durante il
+ * caricamento: le tessere OpenStreetMap e il file per stazione (2,6 MB) sono la
+ * parte piu' costosa della pagina, e messi nel percorso critico rimandavano il
+ * primo disegno di tutto il resto. Qui partono appena il browser ha finito,
+ * cosi' la mappa c'e' senza che il caricamento ne paghi il prezzo.
+ *
+ * Prima la scheda era chiusa per lo stesso motivo, ma una mappa chiusa in una
+ * dashboard geografica sembra una mappa che non c'e'.
+ */
+function avviaMappaDifferita() {
+  const mapEl = document.getElementById("map");
+  if (!mapEl || isCardCollapsed(mapEl)) return;
+
+  const parti = function() {
+    initMap();
+    ensureStationsData().then(function() {
+      renderMap();
+      // Leaflet calcola le dimensioni al momento della creazione: se il
+      // contenitore era ancora in fase di disegno le tessere restano tagliate.
+      setTimeout(function() { try { state.map.invalidateSize(); } catch {} }, 200);
+    });
+  };
+
+  if (typeof requestIdleCallback === "function") requestIdleCallback(parti, { timeout: 1500 });
+  else setTimeout(parti, 250);
 }
 
 /* ────────────────── filters init ────────────────── */
@@ -2662,13 +2701,6 @@ async function loadAll() {
   initToggleControls();
   initFiltersToggle();
 
-  const mapCardCollapsed = (function() {
-    const mapEl = document.getElementById("map");
-    const card = mapEl && mapEl.closest && mapEl.closest(".card");
-    return card && card.classList.contains("card--collapsed");
-  }());
-  if (!mapCardCollapsed) initMap();
-
   ensureHistToggle();
   initCollapsibleCards();
   initStationsMetricSel();
@@ -2685,6 +2717,7 @@ async function loadAll() {
   }
 
   renderAll();
+  avviaMappaDifferita();
 
   const haveAny =
     (state.data.kpiMonthCat && state.data.kpiMonthCat.length) ||
