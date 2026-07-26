@@ -210,6 +210,14 @@ def main() -> None:
     except Exception:
         bucket_labels = []
 
+    # Le corse cancellate e soppresse hanno una classe propria, che va in coda
+    # all'asse: non e' un intervallo di minuti, e' il caso peggiore. Prima
+    # finivano nel bucket dei dati mancanti e la distribuzione non le mostrava,
+    # pur contandole nei totali in testa alla pagina.
+    from .build_gold import ETICHETTA_NON_EFFETTUATE
+    if bucket_labels and ETICHETTA_NON_EFFETTUATE not in bucket_labels:
+        bucket_labels = list(bucket_labels) + [ETICHETTA_NON_EFFETTUATE]
+
     manifest = {
         "built_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "gold_files": sorted(f"{n}.csv" for n in present),

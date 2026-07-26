@@ -226,7 +226,7 @@
         <button class="card-toggle" aria-label="Espandi/Collassa">&#9654;</button>
       </div>
       <div class="card-body">
-        <div class="card-desc">Distribuzione dei treni per scostamento dall'orario all'arrivo (minuti). I valori negativi sono arrivi in anticipo, non ritardi negativi: valgono pochi minuti e corrispondono al margine di recupero previsto dall'orario. Gli anticipi oltre i 5 minuti non sono arrivi reali ma errori della sorgente, e restano esclusi dalle statistiche: sono il 3,5% delle corse effettuate.</div>
+        <div class="card-desc">Distribuzione dei treni per scostamento dall'orario all'arrivo (minuti). I valori negativi sono arrivi in anticipo, non ritardi negativi: valgono pochi minuti e corrispondono al margine di recupero previsto dall'orario. Gli anticipi oltre i 5 minuti non sono arrivi reali ma errori della sorgente, e restano esclusi dal calcolo: sono il 3,5% delle corse effettuate. L'ultima barra raccoglie le corse cancellate e soppresse, che non hanno uno scostamento perché non sono partite.</div>
         <div class="filter-badges" id="badgesHist"></div>
         <div id="chartHist" class="chart"></div>
         <div id="costIndicator" class="cost-indicator" style="display:none;">
@@ -242,6 +242,25 @@
       </div>
       <div class="card-body">
         <div class="card-desc">Visualizzazione geografica delle stazioni. I cerchi indicano il valore della metrica selezionata. I filtri stazione partenza/arrivo non si applicano a questa vista.</div>
+        <div class="map-soglia">
+          <label class="map-soglia__switch">
+            <input type="checkbox" id="mapSogliaOn">
+            <span>Mostra solo le stazioni oltre una soglia di ritardo</span>
+          </label>
+          <div class="map-soglia__controlli" id="mapSogliaControlli" hidden>
+            <label for="mapSogliaMin">Conta in ritardo oltre</label>
+            <select id="mapSogliaMin">
+              <option value="5">5 minuti</option>
+              <option value="10">10 minuti</option>
+              <option value="15" selected>15 minuti</option>
+              <option value="30">30 minuti</option>
+              <option value="60">60 minuti</option>
+            </select>
+            <label for="mapSogliaPct">Nascondi sotto il</label>
+            <input type="range" id="mapSogliaPct" min="0" max="50" step="1" value="10">
+            <output id="mapSogliaPctVal">10%</output>
+          </div>
+        </div>
         <div class="filter-badges" id="badgesMap"></div>
         <div id="map" class="map"></div>
         <div class="note" id="mapNote"></div>

@@ -825,3 +825,32 @@ body.embed-mode .embed-hide {
   .map-legend { color: #ddd; }
   .map-legend__note { color: #aaa; }
 }
+
+/* Controlli della soglia di ritardo sulla mappa */
+.map-soglia {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  background: var(--card-alt, #f8fafc);
+  font-size: 0.9rem;
+}
+.map-soglia__switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.map-soglia__controlli {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border, #e2e8f0);
+}
+.map-soglia__controlli label { color: var(--muted, #64748b); }
+.map-soglia__controlli select { padding: 4px 6px; }
+.map-soglia__controlli input[type="range"] { flex: 1 1 140px; min-width: 120px; }
+.map-soglia__controlli output { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 3.2em; }

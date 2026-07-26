@@ -159,6 +159,11 @@ def _apply_code_map(df: pd.DataFrame, code_map: Dict[str, str]) -> pd.DataFrame:
 
 
 # Columns that are always summed when re-aggregating after code remapping.
+# Classe dell'istogramma per le corse che non sono partite. Sta fuori dai
+# bucket configurabili in pipeline.yml perche' non e' un intervallo di minuti:
+# e' l'assenza della corsa.
+ETICHETTA_NON_EFFETTUATE = "non effettuate"
+
 _SUM_COLS = frozenset([
     "corse_osservate", "corse_con_misura", "effettuate", "cancellate", "soppresse",
     "parzialmente_cancellate", "cancellate_tot", "non_effettuate", "info_mancante",
@@ -494,7 +499,16 @@ def build_metrics(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
 
     edges = cfg["delay_buckets_minutes"]["edges"]
     labels = cfg["delay_buckets_minutes"]["labels"]
-    df["bucket_ritardo_arrivo"] = bucketize_delay_series(dev, edges, labels)
+    bucket = bucketize_delay_series(dev, edges, labels)
+
+    # Le corse che non sono partite non hanno uno scostamento, e finivano tutte
+    # nel bucket "missing" insieme ai dati mancanti veri. Sull'istogramma
+    # sparivano: erano contate nei totali in testa alla pagina ma invisibili
+    # nella distribuzione, e chi guardava non aveva modo di vedere dove fossero
+    # finite. Ora hanno una classe propria, che la dashboard disegna come ultima
+    # barra: una corsa cancellata e' il caso peggiore, non un dato assente.
+    non_effettuata = (df["is_cancellato"].astype(bool) | df["is_soppresso"].astype(bool))
+    df["bucket_ritardo_arrivo"] = bucket.mask(non_effettuata, ETICHETTA_NON_EFFETTUATE)
 
     return df
 

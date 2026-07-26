@@ -478,9 +478,11 @@ function safeManifestDefaults() {
       "hist_stazioni_mese_categoria_ruolo.csv",
       "hist_stazioni_dettaglio_categoria_ruolo.csv"
     ],
+    // Ripiego usato solo se il manifest non arriva. Tenuto allineato ai bucket
+    // di config/pipeline.yml, con in coda la classe delle corse non effettuate.
     delay_bucket_labels: [
-      "<=-60","(-60,-30]","(-30,-15]","(-15,-10]","(-10,-5]","(-5,-1]",
-      "(-1,0]","(0,1]","(1,5]","(5,10]","(10,15]","(15,30]","(30,60]","(60,120]",">120"
+      "-5","(-5,-1]","(-1,0]","(0,1]","(1,5]","(5,10]","(10,15]","(15,30]",
+      "(30,60]","(60,120]","> 120","non effettuate"
     ]
   };
 }
@@ -1638,6 +1640,10 @@ function renderHist() {
     const sum = (k) => odRows.reduce((a, r) => a + toNum(r[k]), 0);
     const o5 = sum("oltre_5"), o10 = sum("oltre_10"), o15 = sum("oltre_15"),
           o30 = sum("oltre_30"), o60 = sum("oltre_60");
+    // Le corse cancellate e soppresse chiudono l'asse. Sono nei totali in
+    // testa alla pagina ma prima non comparivano qui, e una tratta molto
+    // cancellata risultava indistinguibile da una puntuale: le sue corse
+    // semplicemente non c'erano nel grafico.
     const classi = [
       ["in anticipo", sum("in_anticipo")],
       ["0–4", sum("in_orario")],
@@ -1645,8 +1651,10 @@ function renderHist() {
       ["10–14", o10 - o15],
       ["15–29", o15 - o30],
       ["30–59", o30 - o60],
-      ["≥ 60", o60]
+      ["≥ 60", o60],
+      ["non effettuate", sum("non_effettuate")]
     ];
+    const misurate = classi.slice(0, -1).reduce((a, c) => a + Math.max(0, c[1]), 0);
     const tot = classi.reduce((a, c) => a + Math.max(0, c[1]), 0);
 
     if (noteEl) {
@@ -1655,7 +1663,8 @@ function renderHist() {
       const dn = depSel2 && depSel2.selectedIndex >= 0 ? depSel2.options[depSel2.selectedIndex].text : state.filters.dep;
       const an = arrSel2 && arrSel2.selectedIndex >= 0 ? arrSel2.options[arrSel2.selectedIndex].text : state.filters.arr;
       noteEl.textContent = "Distribuzione della tratta " + dn + " → " + an
-        + " (" + fmtInt(tot) + " corse misurate), ricavata dalle soglie della tabella origine-destinazione: "
+        + " (" + fmtInt(misurate) + " corse misurate, " + fmtInt(tot - misurate)
+        + " non effettuate), ricavata dalle soglie della tabella origine-destinazione: "
         + "classi piu' ampie dei bucket per singola stazione, ma riferite esattamente a questa tratta.";
       noteEl.style.display = "";
     }
@@ -1842,11 +1851,62 @@ function mapMetricValue(row) {
   return computeValue(toNum(row.corse_osservate), toNum(row.in_ritardo), toNum(row.minuti_ritardo_tot), toNum(row.soppresse), toNum(row.cancellate_tot), measuredRuns(row));
 }
 
+// Le soglie disponibili sono quelle che il gold pubblica come colonne
+// cumulative: non si possono scegliere valori arbitrari senza ricalcolare
+// l'intero storico, e queste cinque coprono la domanda utile.
+const SOGLIE_MINUTI = [5, 10, 15, 30, 60];
+
+function statoSoglia() {
+  const on = document.getElementById("mapSogliaOn");
+  const min = document.getElementById("mapSogliaMin");
+  const pct = document.getElementById("mapSogliaPct");
+  const attiva = !!(on && on.checked);
+  return {
+    attiva,
+    minuti: min ? Number(min.value) || 15 : 15,
+    pct: pct ? Number(pct.value) || 0 : 0,
+  };
+}
+
+function collegaControlliSoglia() {
+  const on = document.getElementById("mapSogliaOn");
+  if (!on || on.dataset.collegato) return;
+  on.dataset.collegato = "1";
+  const controlli = document.getElementById("mapSogliaControlli");
+  const min = document.getElementById("mapSogliaMin");
+  const pct = document.getElementById("mapSogliaPct");
+  const out = document.getElementById("mapSogliaPctVal");
+  const metrica = document.getElementById("mapMetricSel");
+
+  const sincronizzaUI = () => {
+    if (controlli) controlli.hidden = !on.checked;
+    if (out && pct) out.textContent = pct.value + "%";
+    // Con la soglia attiva la metrica e' imposta, quindi il menu va
+    // disabilitato invece di restare selezionabile senza effetto.
+    if (metrica) metrica.disabled = on.checked;
+  };
+  const aggiorna = () => { sincronizzaUI(); renderMap(); };
+  on.onchange = aggiorna;
+  if (min) min.onchange = aggiorna;
+  if (pct) pct.oninput = aggiorna;
+  // Solo lo stato iniziale dell'interfaccia: chiamare renderMap qui
+  // rientrerebbe nella funzione che ci ha appena invocati.
+  sincronizzaUI();
+}
+
+// La mappa ha una metrica propria quando la soglia e' attiva, quindi non puo'
+// usare metricLabel(), che serve anche all'asse della serie mensile.
+function etichettaMetricaMappa() {
+  const s = statoSoglia();
+  return s.attiva ? ("% oltre " + s.minuti + " min") : metricLabel();
+}
+
 function renderMap() {
   if (!state.map) return;
   const mapEl = document.getElementById("map");
   if (isCardCollapsed(mapEl)) return;
 
+  collegaControlliSoglia();
   clearMarkers();
 
   const rows = getCachedOrFilter("stationsRows", _computeStationsRows);
@@ -1863,7 +1923,7 @@ function renderMap() {
     if (!coords) continue;
 
     if (!agg.has(cityKey)) {
-      agg.set(cityKey, { cityKey, nome:prettyCityName(cityKey,city), corse_osservate:0, corse_con_misura:0, in_ritardo:0, minuti_ritardo_tot:0, soppresse:0, cancellate_tot:0, lat_weighted_sum:0, lon_weighted_sum:0, weight_sum:0 });
+      agg.set(cityKey, { cityKey, nome:prettyCityName(cityKey,city), corse_osservate:0, corse_con_misura:0, in_ritardo:0, minuti_ritardo_tot:0, soppresse:0, cancellate_tot:0, oltre_5:0, oltre_10:0, oltre_15:0, oltre_30:0, oltre_60:0, lat_weighted_sum:0, lon_weighted_sum:0, weight_sum:0 });
     }
     const a = agg.get(cityKey);
     const corse = toNum(r.corse_osservate);
@@ -1871,6 +1931,7 @@ function renderMap() {
     a.corse_osservate += corse;
     a.corse_con_misura += measuredRuns(r);
     a.in_ritardo += toNum(r.in_ritardo);
+    for (const k of SOGLIE_MINUTI) a["oltre_" + k] += toNum(r["oltre_" + k]);
     a.minuti_ritardo_tot += toNum(r.minuti_ritardo_tot);
     a.soppresse += toNum(r.soppresse);
     const canc = r.cancellate_tot !== undefined && r.cancellate_tot !== "" ? r.cancellate_tot : r.cancellate;
@@ -1880,10 +1941,22 @@ function renderMap() {
     a.weight_sum += weight;
   }
 
+  // Modalita' soglia: la metrica diventa la quota di corse in ritardo oltre i
+  // minuti scelti, e le stazioni sotto la percentuale minima escono dalla
+  // mappa. Serve a rispondere a una domanda che la vista normale non permette:
+  // dove i ritardi non sono solo frequenti ma gravi. Il denominatore sono le
+  // corse con una misura utilizzabile, non tutte le osservate: gli anticipi
+  // oltre i cinque minuti restano nel dato ma fuori dal calcolo, altrimenti
+  // gonfierebbero la base e sfaserebbero la percentuale.
+  const soglia = statoSoglia();
   const pts = Array.from(agg.values()).map((o) => {
     const w = o.weight_sum > 0 ? o.weight_sum : 1;
-    return { ...o, coords:{ lat: o.lat_weighted_sum/w, lon: o.lon_weighted_sum/w }, v: mapMetricValue(o) };
-  }).filter((o) => Number.isFinite(o.coords.lat) && Number.isFinite(o.coords.lon));
+    const v = soglia.attiva
+      ? (o.corse_con_misura > 0 ? (o["oltre_" + soglia.minuti] / o.corse_con_misura) * 100 : 0)
+      : mapMetricValue(o);
+    return { ...o, coords:{ lat: o.lat_weighted_sum/w, lon: o.lon_weighted_sum/w }, v };
+  }).filter((o) => Number.isFinite(o.coords.lat) && Number.isFinite(o.coords.lon))
+    .filter((o) => !soglia.attiva || o.v >= soglia.pct);
 
   pts.sort((a, b) => toNum(b.v) - toNum(a.v));
   const top = pts.slice(0, 250);
@@ -1946,7 +2019,7 @@ function renderMap() {
     const ratio = maxVolume > 0 ? Math.sqrt(vol / maxVolume) : 0;
     const radius = minRadius + ratio * (maxRadius - minRadius);
     const poche = !affidabile(p);
-    const label = "<b>" + p.nome + "</b><br>" + metricLabel() + ": " + fmtFloat(val)
+    const label = "<b>" + p.nome + "</b><br>" + etichettaMetricaMappa() + ": " + fmtFloat(val)
       + "<br>Corse osservate: " + fmtInt(vol)
       + (poche ? "<br><i>Sotto le " + SOGLIA_CORSE + " corse: la percentuale non e' significativa. "
                  + "Il dato copre solo origine e destinazione, quindi le stazioni di transito "
@@ -1987,7 +2060,7 @@ function renderMapLegend(lo, hi, ramp) {
   }).join("");
 
   box.innerHTML =
-    '<div class="map-legend__row"><span class="map-legend__label">' + metricLabel() + '</span>' +
+    '<div class="map-legend__row"><span class="map-legend__label">' + etichettaMetricaMappa() + '</span>' +
     swatches +
     '<span class="map-legend__scale">' + fmtFloat(lo) + ' → ' + fmtFloat(hi) + '</span></div>' +
     '<div class="map-legend__row map-legend__note">La dimensione del cerchio indica il numero di corse osservate.</div>';
