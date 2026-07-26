@@ -1940,6 +1940,19 @@ function collegaControlliSoglia() {
   const out = document.getElementById("mapSogliaPctVal");
   const metrica = document.getElementById("mapMetricSel");
 
+  // Chrome ripristina i valori dei controlli quando si torna su una pagina gia'
+  // visitata, e lo fa anche con autocomplete="off": il cursore della soglia
+  // ripartiva da dove l'utente lo aveva lasciato l'ultima volta invece che dal
+  // 10% scritto nel markup, e l'interruttore poteva risultare acceso senza che
+  // nessuno lo avesse toccato in questa visita. Lo stato iniziale deve venire
+  // dalla pagina, non dalla memoria del browser.
+  on.checked = on.hasAttribute("checked");
+  if (pct) pct.value = pct.getAttribute("value") || "10";
+  if (min) {
+    const predefinita = min.querySelector("option[selected]");
+    if (predefinita) min.value = predefinita.value;
+  }
+
   const sincronizzaUI = () => {
     if (controlli) controlli.hidden = !on.checked;
     if (out && pct) out.textContent = pct.value + "%";
