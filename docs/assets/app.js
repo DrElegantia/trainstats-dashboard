@@ -451,6 +451,10 @@ var _STATION_ABBREV = [
 
 function normalizeStationName(s) {
   var t = String(s || "").toUpperCase().trim();
+  // Deve restare identico a normalize_station_name in scripts/utils.py:
+  // l'accento finale arriva come apice inverso, barra rovesciata o niente, e
+  // trattarli in modo diverso spezza la stessa stazione in piu' voci.
+  t = t.replace(/[`\\]/g, "'");
   t = t.replace(/-/g, " ").replace(/'/g, "' ").replace(/\s+/g, " ");
   // Expand "M N" abbreviation (Trenord: Milano Nord)
   t = t.replace(/^M N\b/, "MILANO NORD");
@@ -1900,9 +1904,12 @@ function collegaControlliSoglia() {
   const sincronizzaUI = () => {
     if (controlli) controlli.hidden = !on.checked;
     if (out && pct) out.textContent = pct.value + "%";
-    // Con la soglia attiva la metrica e' imposta, quindi il menu va
-    // disabilitato invece di restare selezionabile senza effetto.
-    if (metrica) metrica.disabled = on.checked;
+    // Il menu della metrica NON va disabilitato: sta nella barra dei filtri in
+    // cima, e' condiviso con le altre viste, e vederlo bloccato da un
+    // interruttore dentro la card della mappa e' incomprensibile. La modalita'
+    // soglia si limita a sostituire la metrica della mappa, e lo dichiara in
+    // legenda e nei popup.
+    if (metrica) metrica.disabled = false;
   };
   const aggiorna = () => { sincronizzaUI(); renderMap(); };
   on.onchange = aggiorna;

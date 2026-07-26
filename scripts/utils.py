@@ -185,6 +185,15 @@ def normalize_station_name(x: Any) -> str:
     if x is None:
         return ""
     s = str(x).strip().upper()
+    # L'accento finale arriva in tre grafie diverse per la stessa stazione, a
+    # seconda di come la sorgente ha convertito il carattere accentato: apice
+    # inverso, barra rovesciata, o niente. Sono nomi diversi solo per il
+    # computer, e restavano stazioni distinte: SANTHIA` con 48.941 corse,
+    # SANTHIA con 6.815 e SANTHIA\ con 5.670 erano tre voci separate. In tutto
+    # 32 stazioni spezzate per 139.044 osservazioni, fra cui Cefalu', L'Aquila,
+    # Cirie' e Forli'. Ne' l'apice inverso ne' la barra rovesciata compaiono in
+    # un nome di stazione reale, quindi si trattano come l'apostrofo.
+    s = s.replace("`", "'").replace("\\", "'")
     # I separatori interni alternano spazio, punto e trattino per la stessa
     # stazione ("ALBAIRATE-VERMEZZO" e "ALBAIRATE VERMEZZO").
     s = s.replace("-", " ").replace("'", "' ")

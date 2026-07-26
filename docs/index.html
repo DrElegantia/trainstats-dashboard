@@ -244,12 +244,12 @@
         <div class="card-desc">Visualizzazione geografica delle stazioni. I cerchi indicano il valore della metrica selezionata. I filtri stazione partenza/arrivo non si applicano a questa vista.</div>
         <div class="map-soglia">
           <label class="map-soglia__switch">
-            <input type="checkbox" id="mapSogliaOn">
+            <input type="checkbox" id="mapSogliaOn" autocomplete="off">
             <span>Mostra solo le stazioni oltre una soglia di ritardo</span>
           </label>
           <div class="map-soglia__controlli" id="mapSogliaControlli" hidden>
             <label for="mapSogliaMin">Conta in ritardo oltre</label>
-            <select id="mapSogliaMin">
+            <select id="mapSogliaMin" autocomplete="off">
               <option value="5">5 minuti</option>
               <option value="10">10 minuti</option>
               <option value="15" selected>15 minuti</option>
@@ -257,7 +257,7 @@
               <option value="60">60 minuti</option>
             </select>
             <label for="mapSogliaPct">Nascondi sotto il</label>
-            <input type="range" id="mapSogliaPct" min="0" max="50" step="1" value="10">
+            <input type="range" id="mapSogliaPct" min="0" max="50" step="1" value="10" autocomplete="off">
             <output id="mapSogliaPctVal">10%</output>
           </div>
         </div>
@@ -301,6 +301,6 @@
 
   <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="assets/app.js?v=7f633c2ea2"></script>
+  <script src="assets/app.js?v=6de246dc4a"></script>
 </body>
 </html>
