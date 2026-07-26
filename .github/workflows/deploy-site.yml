@@ -11,7 +11,12 @@ on:
       # sembrava che il deploy non fosse partito.
       - "data/gold/**"
       - "data/stations/**"
-      - "scripts/build_site.py"
+      # La cache delle coordinate sta nella cartella stations/ in radice, non in
+      # data/stations/: e' un ingresso di build_station_dim come gli altri, e
+      # dimenticarla vuol dire correggere una coordinata senza che il sito la
+      # veda mai.
+      - "stations/**"
+      - "scripts/**"
 
   workflow_dispatch:
 
