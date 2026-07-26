@@ -866,3 +866,48 @@ body.embed-mode .embed-hide {
   line-height: 1.5;
 }
 .note--evidenza:empty { display: none; }
+
+/* Tre numeri affiancati dentro il riquadro dello Stretto: il confronto va
+   visto, non letto. Piu' piccoli dei KPI in testa alla pagina, che restano il
+   dato principale. */
+.mini-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+.mini-kpi {
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.mini-kpi--forte {
+  border-color: rgba(0, 115, 230, 0.35);
+  background: rgba(0, 115, 230, 0.05);
+}
+.mini-kpi__label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.mini-kpi__value {
+  margin-top: 3px;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.mini-kpi__note {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+.mini-kpis__coda { line-height: 1.5; }
+
+@media (max-width: 720px) {
+  .mini-kpis { grid-template-columns: 1fr; }
+}
