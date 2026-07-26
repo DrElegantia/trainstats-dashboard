@@ -246,9 +246,12 @@ def build_station_dim(enable_geocoding: bool = True) -> pd.DataFrame:
     failed_count = 0
 
     try:
-        from .coordinate_osm import indice_osm
-        osm_coords = indice_osm()
-        print(f"Anagrafica OpenStreetMap: {len(osm_coords)} stazioni")
+        from .coordinate_osm import coordinate_per_nomi
+        # Si passano i nomi che ci servono davvero, cosi' oltre al confronto
+        # esatto scatta anche quello per abbreviazione ("RIVAROLO" per
+        # "Rivarolo Canavese"), che ha senso solo sapendo cosa stiamo cercando.
+        osm_coords = coordinate_per_nomi(list(names.values()))
+        print(f"Anagrafica OpenStreetMap: {len(osm_coords)} nomi risolti")
     except Exception as e:
         osm_coords = {}
         print(f"Anagrafica OpenStreetMap non disponibile ({e}): "

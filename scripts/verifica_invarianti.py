@@ -116,7 +116,28 @@ if not kmc.empty:
     spurie = cats & {"None", "nan", "NaT", "null", "<NA>", "none"}
     check("nessuna categoria spuria", not spurie, f"trovate {sorted(spurie)}" if spurie else f"{len(cats)} categorie")
 
-# 8. il sito deve avere manifest e le tabelle attese
+# 8. nessuna stazione di peso deve stare lontana dalla propria rete
+#
+# Le coordinate arrivano da una fonte esterna abbinata per nome, e l'abbinamento
+# puo' sbagliare in modi che nessun altro controllo vede: Venezia S. Lucia e'
+# stata disegnata in Basilicata per mesi, Bolzano in Sicilia, Lodi sulla metro
+# A di Roma. Qui non si guardano i nomi ma i treni: se una stazione e' lontana
+# da ogni stazione con cui e' collegata, la sbagliata e' lei.
+#
+# La soglia sul volume tiene fuori i bivi e le fermate con tre corse in sette
+# anni, dove la rete non e' un riferimento e il segnale e' solo rumore.
+try:
+    from scripts.coordinate_osm import audit_coerenza_rete
+    fuori = audit_coerenza_rete(soglia_km=100)
+    gravi = fuori[fuori["corse"] >= 1000] if not fuori.empty else fuori
+    n_gravi = 0 if gravi.empty else len(gravi)
+    check("nessuna stazione rilevante fuori dalla sua rete", n_gravi == 0,
+          (f"{n_gravi} stazioni: " + ", ".join(gravi["nome"].head(5))) if n_gravi
+          else f"{0 if fuori.empty else len(fuori)} segnalazioni, tutte sotto le 1.000 corse")
+except Exception as e:
+    check("audit coordinate eseguibile", False, str(e)[:120])
+
+# 9. il sito deve avere manifest e le tabelle attese
 import json
 import os
 if os.path.exists("docs/data/manifest.json"):

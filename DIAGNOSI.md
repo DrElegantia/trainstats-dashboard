@@ -252,7 +252,79 @@ mostrava, nessun numero appariva assurdo: si vedeva solo perche' l'invariante
 "silver e gold devono contare le stesse corse" e' verificato a ogni
 ricostruzione. Uno scarto di 33 righe su 11 milioni non si nota a occhio.
 
-### 3.12 I grafici mensili scavalcavano i mesi mancanti
+### 3.12 Le coordinate delle stazioni erano sbagliate su larga scala
+
+Segnalato da un lettore: "le coordinate di Venezia risultano errate". Vere, e
+non era un caso isolato.
+
+Venezia S. Lucia, 894.000 corse, stava a `40,56 / 16,66`: in Basilicata, **655
+km da Venezia Mestre**, che nella realta' dista nove chilometri. La causa e' il
+geocoding via Nominatim interrogato a testo libero, che non cerca stazioni ma
+qualunque toponimo somigliante: per "Venezia Santa Lucia" restituisce una
+frazione chiamata Santa Lucia in provincia di Pordenone, ed e' esattamente il
+punto finito in cache.
+
+La correzione ha richiesto quattro passaggi, ognuno nato dal fallimento del
+precedente.
+
+**Primo, la fonte.** Interrogare i nodi `railway=station` di OpenStreetMap
+invece della ricerca libera: il risultato o e' una stazione o non c'e'. Prima
+passata, 168 stazioni riposizionate per 7,4 milioni di corse, fra cui Napoli
+Centrale (18 km), Bergamo (45), Parma (40), Siena (48).
+
+**Secondo, gli omonimi.** OpenStreetMap ha piu' nodi con lo stesso nome e il
+primo indice teneva quello che capitava per primo: Lodi ha preso la fermata
+della metro A di Roma, Udine e Pistoia sono finite altrove. Un errore
+introdotto dalla correzione stessa. Ora la scelta non si basa sul nome ma sulla
+rete: fra i candidati si prende quello piu' vicino al baricentro delle stazioni
+collegate da treni reali. Una stazione lombarda e' collegata a stazioni
+lombarde. Otto stazioni rimesse a posto, fra cui Vittoria che sbagliava di
+1.019 km.
+
+**Terzo, i nomi che non combaciano.** Bolzano e' rimasta in Sicilia per un giro
+intero perche' nessun nodo OSM si chiama "Bolzano": si chiama "Bolzano -
+Bozen". Stessa cosa per Bressanone, Merano, Aosta, Villa Opicina. Ora si
+indicizzano anche le componenti delle forme bilingui. E diversi capolinea
+stanno all'estero, fuori dall'area italiana interrogata: Stabio in Svizzera,
+Modane in Francia. Aggiunte le fasce di confine, da 3.940 a 7.961 nodi.
+
+Restano i casi in cui la sorgente abbrevia o scrive diversamente: "RIVAROLO"
+per Rivarolo Canavese, "CASTELLINA CH" per Castellina in Chianti, "CIRE'" per
+Ciriè. Si risolvono confrontando parola per parola e, all'ultimo, ignorando gli
+accenti. Entrambi i passaggi accettano solo se la rete conferma: "FIERA" trova
+un solo nome esteso, "Fiera di Roma", ma i treni di quella stazione vanno tutti
+a Palermo, quindi la corrispondenza viene rifiutata.
+
+**Quarto, il controllo che non dipende da nessuna anagrafica.** Tutto quanto
+sopra trova errori solo dove OpenStreetMap ha un nome corrispondente. Serviva
+un criterio che funzionasse anche senza: `audit_coerenza_rete` non guarda i
+nomi, guarda i treni, e segnala le stazioni lontane da **ogni** stazione con
+cui sono collegate.
+
+La misura giusta e' la distanza dal vicino piu' prossimo, non dal baricentro
+dei vicini. Con il baricentro il controllo bocciava Milano Centrale: e'
+collegata a mezza Italia, quindi il centro dei suoi trecento collegamenti cade
+in Toscana e la stazione risulta "fuori posto" pur essendo al suo posto. Con il
+vicino piu' prossimo il criterio regge, perche' ogni stazione reale ha almeno
+un collegamento vicino, la fermata successiva sulla linea.
+
+| | prima | dopo |
+|---|---|---|
+| Stazioni fuori posto oltre 5 km | 202 | 0 |
+| Corse servite da stazioni mal posizionate | 7,5 mln | 0 |
+| Stazioni georeferenziate | 1.599 | **3.046** |
+| Copertura pesata sul traffico | 97,95% | 98,45% |
+| Segnalazioni residue dell'audit | | 2, per 9 corse |
+
+Le due residue sono un bivio da sei corse che OpenStreetMap non censisce e
+Riccione, che l'audit segnala ma la cui coordinata combacia con OSM: e' un
+falso positivo dovuto ai suoi tre soli collegamenti.
+
+L'audit e' entrato negli invarianti verificati a ogni ricostruzione, con una
+soglia di mille corse per non far fallire la pipeline su fermate marginali dove
+la rete non e' un riferimento.
+
+### 3.13 I grafici mensili scavalcavano i mesi mancanti
 
 Emerso pubblicando lo storico, e non e' un difetto dei dati ma di come
 vengono disegnati.
