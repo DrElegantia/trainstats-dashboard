@@ -2581,13 +2581,14 @@ function renderStretto(righe) {
     "Roma-Reggio Calabria è " + toNum(viaTerra.km).toFixed(0) + " km in " +
     ore(toNum(viaTerra.durata_media_min)) + ", Roma-Messina " +
     toNum(viaNave.km).toFixed(0) + " km in " + ore(toNum(viaNave.durata_media_min)) + ": " +
-    Math.abs(dKm).toFixed(0) + " km in meno e due ore in più, perché il treno sale sulla nave. " +
-    "Eppure non sono le tratte lente della rete:";
+    Math.abs(dKm).toFixed(0) + " km in meno e due ore in più, perché il treno sale sulla nave " +
+    "(manovra, imbarco, traversata, sbarco). E si vede sulla velocità:";
 
-  // Il costo della nave da solo suona come una condanna. Il confronto lo
-  // smentisce, ma un paragrafo va letto: tre numeri affiancati si vedono e
-  // basta. Le medie sono pesate sulle corse, non semplici: una tratta con
-  // 8.823 corse dice piu' di una con 579 su come si viaggia davvero.
+  // Il confronto va fatto a parita' di lunghezza, altrimenti mente. Rapportate
+  // a tutte le 1.192 tratte, quelle dello Stretto sembrano sopra la media: ma
+  // quella platea e' fatta in maggioranza di regionali che fermano ovunque, e
+  // un intercity di ottocento chilometri ci fa una figura facile. Confrontate
+  // con le altre tratte lunghe, che e' il paragone giusto, stanno in fondo.
   const stretto = righe.filter((r) => VERO.has(String(r.attraversa_stretto).toLowerCase()));
   const media = (v) => {
     let n = 0, d = 0;
@@ -2598,12 +2599,18 @@ function renderStretto(righe) {
     return d > 0 ? n / d : NaN;
   };
 
-  if (stretto.length >= 2) {
-    const vStretto = media(stretto);
-    const vRete = media(righe);
-    const lenta = righe.slice().sort((a, b) => toNum(a.km_h_programmati) - toNum(b.km_h_programmati))[0];
-    const peggiore = Math.max(...stretto.map((r) => toNum(r.min_per_100km)));
-    const piuLente = righe.filter((r) => toNum(r.min_per_100km) > peggiore).length;
+  const SOGLIA_LUNGA_KM = 400;
+  const lunghe = righe.filter((r) => toNum(r.km) >= SOGLIA_LUNGA_KM);
+  const strettoLunghe = stretto.filter((r) => toNum(r.km) >= SOGLIA_LUNGA_KM);
+  const altreLunghe = lunghe.filter((r) => !VERO.has(String(r.attraversa_stretto).toLowerCase()));
+
+  if (strettoLunghe.length >= 2 && altreLunghe.length >= 10) {
+    const vStretto = media(strettoLunghe);
+    const vAltre = media(altreLunghe);
+    const ordinate = lunghe.slice().sort((a, b) => toNum(b.km_h_programmati) - toNum(a.km_h_programmati));
+    const posizioni = strettoLunghe
+      .map((r) => ordinate.findIndex((x) => x === r) + 1)
+      .sort((a, b) => a - b);
 
     const box = (etichetta, valore, sotto, forte) =>
       '<div class="mini-kpi' + (forte ? " mini-kpi--forte" : "") + '">' +
@@ -2612,16 +2619,19 @@ function renderStretto(righe) {
       '<div class="mini-kpi__note">' + sotto + "</div></div>";
 
     testo += '<div class="mini-kpis">' +
-      box("Tratte via Stretto", vStretto.toFixed(0) + " km/h",
-          stretto.length + " tratte, " + fmtInt(stretto.reduce((s, r) => s + toNum(r.corse), 0)) + " corse", true) +
-      box("Media della rete", vRete.toFixed(0) + " km/h",
-          fmtInt(righe.length) + " tratte confrontabili", false) +
-      box("La più lenta d'Italia", toNum(lenta.km_h_programmati).toFixed(0) + " km/h",
-          titoloTratta(lenta) + ", " + toNum(lenta.km).toFixed(0) + " km", false) +
+      box("Via Stretto", vStretto.toFixed(0) + " km/h",
+          strettoLunghe.length + " tratte, " +
+          fmtInt(strettoLunghe.reduce((s, r) => s + toNum(r.corse), 0)) + " corse", true) +
+      box("Altre tratte lunghe", vAltre.toFixed(0) + " km/h",
+          fmtInt(altreLunghe.length) + " tratte oltre " + SOGLIA_LUNGA_KM + " km", false) +
+      box("Posizione in classifica",
+          posizioni[0] + "ª–" + posizioni[posizioni.length - 1] + "ª",
+          "su " + fmtInt(lunghe.length) + " tratte lunghe, dalla più veloce", false) +
       "</div>" +
-      '<div class="mini-kpis__coda">' + fmtInt(piuLente) + " tratte su " + fmtInt(righe.length) +
-      " (" + Math.round(100 * piuLente / righe.length) + "%) impiegano più minuti per " +
-      "chilometro della peggiore fra quelle che attraversano lo Stretto.</div>";
+      '<div class="mini-kpis__coda">Il confronto va fatto a parità di lunghezza: rapportate ' +
+      "a tutte le " + fmtInt(righe.length) + " tratte queste sembrerebbero sopra la media, ma " +
+      "quella platea è fatta soprattutto di regionali che fermano ovunque. " +
+      "Fra le tratte lunghe, dove il paragone regge, sono fra le più lente d’Italia.</div>";
   }
   el.innerHTML = testo;
 }

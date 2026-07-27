@@ -967,12 +967,25 @@ imbarco, traversata e sbarco. E' l'unico punto della rete dove il tempo non ha
 niente a che vedere con la distanza, e sta nella dashboard sotto la classifica
 per chilometro, calcolato dai dati pubblicati e non scritto a mano.
 
-Il numero da solo pero' si legge come una condanna, e il confronto con il resto
-della rete dice il contrario. Le quattro tratte che attraversano lo Stretto
-viaggiano fra **67 e 74 km/h programmati contro una mediana di 57**, e **866
-tratte su 1.192, il 73%, impiegano piu' minuti per chilometro della peggiore
-fra loro**. Due ore di nave diluite su 650-1.400 km pesano meno di un regionale
-che ferma ovunque: Eboli-Nocera Inferiore, 41 km, sta a 25 km/h.
+**Il confronto va fatto a parita' di lunghezza, altrimenti mente.** La prima
+versione di questa scheda rapportava le tratte dello Stretto a tutte le 1.192
+pubblicate e concludeva che erano piu' veloci della media: 69 km/h contro 58.
+E' vero come numero e falso come conclusione, perche' quella platea e' fatta in
+maggioranza di regionali che fermano ovunque, e un intercity di ottocento
+chilometri ci fa una figura facile.
+
+Confrontate con le altre tratte lunghe, che e' il paragone che regge:
+
+| tratte oltre 400 km | media pesata sulle corse |
+|---|---|
+| senza Stretto (70 tratte) | **116,2 km/h** |
+| via Stretto (4 tratte) | **69,5 km/h** |
+
+Le quattro stanno **66ª, 68ª, 70ª e 71ª su 74**: sono fra le piu' lente della
+lunga percorrenza italiana, non fra le piu' veloci della rete. Milano-Napoli fa
+774 km a 151 km/h, Milano-Siracusa ne fa 1.386 a 67. La nave non e' l'unica
+causa (la dorsale calabrese e quella sicula sono lente per conto loro) ma i 122
+minuti misurati sopra sono la parte che un collegamento fisso eliminerebbe.
 
 Le quattro tratte sono marcate nel file pubblicato con una colonna
 `attraversa_stretto`, perche' saperlo richiede il grafo della rete e il browser
