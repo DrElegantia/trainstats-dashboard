@@ -997,6 +997,33 @@ modo (Taormina Giardini, Punta Raisi Aeroporto), che altrimenti risultavano
 continentali e facevano sembrare che mezza Sicilia interna attraversasse lo
 Stretto.
 
+### 7.2.4 La lentezza disegnata sui binari
+
+La classifica dice **quali** tratte sono lente, la mappa dice **dove**. Sono due
+domande diverse: dalla classifica non si vede che la lentezza del Mezzogiorno e'
+continua da Battipaglia in giu', ne' che il nodo di Milano e' rosso perche' ci
+passano soprattutto suburbani.
+
+Le linee sono i binari veri. Una tratta e' una coppia di stazioni, e disegnarla
+come segmento retto fra i due capolinea produrrebbe una mappa falsa:
+Roma-Siracusa taglierebbe il Tirreno. La geometria viene dal grafo
+OpenStreetMap gia' usato per misurare le distanze, e per ogni collegamento si
+ricostruisce il cammino e si attribuisce a ogni tratto percorso la velocita' di
+quel collegamento, pesata sulle corse. 1.168 percorsi su 1.192 tracciati,
+178.399 tratti di binario, ridotti a 932 polilinee da 270 KB unendo i tratti
+adiacenti della stessa classe e semplificando la geometria a 110 metri.
+
+**Cosa la mappa misura, e cosa no.** Misura i treni, non la linea: il colore e'
+la media pesata delle velocita' commerciali dei treni che percorrono quel
+tratto. Dove passano molti regionali il tratto risulta lento anche se
+l'infrastruttura non lo e', perche' sono loro a fare il numero delle corse:
+Milano-Piacenza risulta a 54 km/h per questo motivo. E la sorgente da' i tempi
+solo ai capolinea, non alle fermate intermedie, quindi la velocita' di un
+viaggio si spalma uguale su tutto il percorso. Entrambe le avvertenze sono
+scritte sotto la mappa, non solo qui: una mappa che promette "dove la rete e'
+lenta" e misura altro e' peggio di nessuna mappa, e infatti la scheda si chiama
+"Dove i treni vanno piano".
+
 ### 7.3 Cosa ha trovato la classifica che la mappa non mostrava
 
 Il rapporto fra chilometri e minuti e' un controllo di plausibilita' che le

@@ -44,6 +44,9 @@ site/
 # them in LFS breaks GitHub Pages serving (Pages only serves LFS pointer files).
 docs/data/*.csv
 docs/data/manifest.json
+# Stessa ragione per la geometria della rete: l'originale sta in
+# data/stations/, build_site ne fa una copia qui.
+docs/data/*.geojson
 
 !.gitkeep
 

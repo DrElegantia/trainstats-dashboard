@@ -88,7 +88,7 @@
   <link rel="preconnect" href="https://cdn.plot.ly" crossorigin />
   <link rel="preconnect" href="https://unpkg.com" crossorigin />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="assets/style.css?v=4e62cd2b55" />
+  <link rel="stylesheet" href="assets/style.css?v=68ad606291" />
 </head>
 <body>
   <div class="loading-overlay" id="loadingOverlay">
@@ -293,6 +293,21 @@
   </section>
 
   <section class="panel">
+    <div class="card collapsible" data-view="rete">
+      <div class="card-header">
+        <h2>Dove i treni vanno piano</h2>
+        <button class="card-toggle" aria-label="Espandi/Collassa">&#9660;</button>
+      </div>
+      <div class="card-body">
+        <div class="card-desc">Ogni tratto di binario colorato dalla velocit&agrave; media dei treni che ci passano sopra, dal rosso (lenti) al verde (veloci). Misura i <em>treni</em>, non la linea: dove passano soprattutto regionali che fermano ovunque il tratto risulta lento anche se l&rsquo;infrastruttura non lo &egrave;. La geometria &egrave; quella reale dei binari, non la congiungente fra i capolinea. <strong>Questa vista copre l&rsquo;intero periodo e non risente dei filtri.</strong></div>
+        <div id="mapRete" class="map map--alta"></div>
+        <div class="rete-legenda" id="reteLegenda"></div>
+        <div class="note" id="reteNota"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
     <div class="card collapsible" data-view="km">
       <div class="card-header">
         <h2>Tratte per chilometro percorso</h2>
@@ -323,6 +338,6 @@
 
   <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="assets/app.js?v=6666524015"></script>
+  <script src="assets/app.js?v=241138cc8b"></script>
 </body>
 </html>

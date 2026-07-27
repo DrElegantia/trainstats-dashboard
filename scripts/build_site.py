@@ -169,6 +169,14 @@ def copy_root_files(target_dir: Path) -> None:
     # filtrabile: i chilometri non dipendono dall'anno o dalla categoria, e la
     # durata media di una tratta calcolata su tre corse non vorrebbe dire nulla.
     # Copre l'intero periodo e lo dichiara nella scheda.
+    # La geometria della rete colorata dalla velocita'. Non si ricostruisce
+    # qui: nasce dal grafo OpenStreetMap, che e' una cache da 21 MB non
+    # versionata e assente in CI. Si copia com'e', come l'anagrafica.
+    rete = Path("data") / "stations" / "velocita_rete.geojson"
+    if rete.exists():
+        shutil.copy2(rete, target_dir / "velocita_rete.geojson")
+        print(f"Copied velocita_rete.geojson ({rete.stat().st_size // 1024} KB)")
+
     km = Path("data") / "stations" / "indicatori_km.csv"
     if km.exists():
         colonne = ["partenza", "arrivo", "km", "qualita_km", "corse",
@@ -259,6 +267,8 @@ def main() -> None:
     copy_root_files(target)
     if (target / "indicatori_km.csv").exists():
         manifest["km_file"] = "indicatori_km.csv"
+    if (target / "velocita_rete.geojson").exists():
+        manifest["rete_file"] = "velocita_rete.geojson"
     (target / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )

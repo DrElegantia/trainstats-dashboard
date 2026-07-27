@@ -554,6 +554,10 @@ const state = {
   _arrAliases: null,  // Set of all codes for selected arr station
   map: null,
   markers: [],
+  // La mappa della lentezza e' separata da quella delle stazioni: fondo
+  // diverso, dati diversi, e non risponde ai filtri.
+  mapRete: null,
+  reteLayer: null,
   filters: {
     year: "all",
     cat: "all",
@@ -969,6 +973,7 @@ function avviaMappaDifferita() {
     // La classifica per chilometro e' un file di un centinaio di KB: sta nella
     // stessa finestra di attesa della mappa senza pesare.
     if (vuoleKm) ensureKmData().then(renderKmRanking);
+    avviaMappaRete();
   };
 
   if (typeof requestIdleCallback === "function") requestIdleCallback(parti, { timeout: 1500 });
@@ -2428,6 +2433,9 @@ function initCollapsibleCards() {
           // filtri: si scarica alla prima apertura e non si ricalcola piu'.
           ensureKmData().then(renderKmRanking);
         }
+        else if (id === "mapRete") {
+          avviaMappaRete();
+        }
       }
     });
   });
@@ -2645,6 +2653,150 @@ function initKmMetricSel() {
   const sel = document.getElementById("kmMetricSel");
   if (!sel) return;
   sel.onchange = function() { ensureKmData().then(renderKmRanking); };
+}
+
+/* ────────────────── mappa della lentezza della rete ────────────────── */
+
+/**
+ * La classifica dice quali tratte sono lente, la mappa dice *dove*. Sono due
+ * domande diverse: dalla classifica non si vede che la lentezza del Sud e'
+ * continua da Battipaglia in giu', ne' che la dorsale tirrenica e quella
+ * adriatica si comportano in modo opposto.
+ *
+ * Le linee sono i binari veri, non le congiungenti fra i capolinea: una retta
+ * Roma-Siracusa taglierebbe il Tirreno, e una mappa che disegna treni sul mare
+ * non la guarda nessuno. La geometria arriva da OpenStreetMap ed e' la stessa
+ * su cui sono misurate le distanze.
+ *
+ * Le soglie non sono tonde per caso: 60 km/h e' la mediana della rete, 130 la
+ * soglia sotto cui nessuna linea veloce dovrebbe stare. Il verde quindi non
+ * vuol dire "buono in assoluto", vuol dire "fra i migliori di questa rete".
+ */
+const SCALA_RETE = [
+  { fino: 40,       colore: "#b2182b", etichetta: "meno di 40" },
+  { fino: 60,       colore: "#ef6548", etichetta: "40 - 60" },
+  { fino: 80,       colore: "#fdae61", etichetta: "60 - 80" },
+  // Il giallo chiaro della scala RdYlGn su fondo bianco e' invisibile: qui
+  // serve un ambra che si veda, non il colore canonico.
+  { fino: 100,      colore: "#e6b800", etichetta: "80 - 100" },
+  { fino: 130,      colore: "#66bd63", etichetta: "100 - 130" },
+  { fino: Infinity, colore: "#12703a", etichetta: "oltre 130" }
+];
+
+function coloreRete(kmh) {
+  for (const s of SCALA_RETE) if (kmh < s.fino) return s.colore;
+  return SCALA_RETE[SCALA_RETE.length - 1].colore;
+}
+
+async function ensureReteData() {
+  if (state.data.rete) return state.data.rete;
+  const base = ensureTrailingSlash(state.dataBase || "data/");
+  const file = (state.manifest && state.manifest.rete_file) || "velocita_rete.geojson";
+  const t = await fetchTextAny([
+    ...candidateFilePaths(base, file),
+    ...candidateFilePaths("data/", file)
+  ]);
+  try { state.data.rete = t ? JSON.parse(t) : null; }
+  catch { state.data.rete = null; }
+  return state.data.rete;
+}
+
+function initMappaRete() {
+  const el = document.getElementById("mapRete");
+  if (!el || state.mapRete) return;
+  if (typeof L !== "object" || typeof L.map !== "function") return;
+  state.mapRete = L.map("mapRete", { center: [42.0, 12.5], zoom: 5.5, zoomSnap: 0.5 });
+  // Fondo in scala di grigi: su una mappa a colori pieni il rosso delle linee
+  // si confonde con quello delle strade principali.
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap contributors &copy; CARTO", maxZoom: 18
+  }).addTo(state.mapRete);
+  setTimeout(() => { try { state.mapRete.invalidateSize(); } catch {} }, 150);
+}
+
+function renderMappaRete() {
+  const el = document.getElementById("mapRete");
+  if (!el || isCardCollapsed(el) || !state.mapRete) return;
+  const geo = state.data.rete;
+  const nota = document.getElementById("reteNota");
+  if (!geo || !geo.features || !geo.features.length) {
+    if (nota) nota.textContent = "Geometria della rete non disponibile in questa build.";
+    return;
+  }
+  if (state.reteLayer) return;   // si disegna una volta sola, non dipende dai filtri
+
+  state.reteLayer = L.geoJSON(geo, {
+    style: (f) => ({
+      color: coloreRete(f.properties.kmh),
+      weight: f.properties.kmh < 60 ? 3 : 2.2,
+      opacity: 0.85
+    }),
+    onEachFeature: (f, strato) => {
+      strato.bindTooltip(
+        "<b>" + Math.round(f.properties.kmh) + " km/h</b> di media sui treni " +
+        "che passano di qui<br>" + fmtInt(f.properties.corse) + " corse",
+        { sticky: true });
+    }
+  }).addTo(state.mapRete);
+
+  // La vista si adatta alla rete disegnata invece di partire da un centro
+  // fisso, altrimenti l'Italia finisce in un angolo circondata da mezza Europa
+  // vuota. L'ordine conta: invalidateSize prima, perche' fitBounds calcola lo
+  // zoom sulle dimensioni che Leaflet crede di avere, e appena creata la mappa
+  // dentro una scheda quelle dimensioni sono ancora quelle sbagliate.
+  try {
+    state.mapRete.invalidateSize();
+    state.mapRete.fitBounds(state.reteLayer.getBounds(), { padding: [12, 12] });
+  } catch {}
+
+  renderLegendaRete(geo);
+  if (nota) {
+    nota.innerHTML =
+      "Il colore è la media, pesata sulle corse, della velocità commerciale dei " +
+      "treni che percorrono quel tratto, non la velocità della linea. " +
+      "<strong>Due avvertenze per leggerla bene:</strong> la sorgente dà i tempi solo " +
+      "ai capolinea e non alle fermate intermedie, quindi la velocità di un " +
+      "viaggio si spalma uguale su tutto il percorso; e dove passano molti " +
+      "regionali il tratto risulta lento anche su infrastruttura veloce, perché " +
+      "sono loro a fare il numero delle corse. Milano-Piacenza risulta a 54 km/h " +
+      "per questo motivo.";
+  }
+}
+
+function renderLegendaRete(geo) {
+  const el = document.getElementById("reteLegenda");
+  if (!el) return;
+  const conta = SCALA_RETE.map(() => 0);
+  for (const f of geo.features) {
+    for (let i = 0; i < SCALA_RETE.length; i++) {
+      if (f.properties.kmh < SCALA_RETE[i].fino) { conta[i]++; break; }
+    }
+  }
+  el.innerHTML =
+    '<span class="rete-legenda__titolo">Velocità commerciale (km/h)</span>' +
+    SCALA_RETE.map((s, i) =>
+      '<span class="rete-legenda__voce">' +
+      '<i style="background:' + s.colore + '"></i>' + s.etichetta +
+      '<b>' + conta[i] + '</b></span>').join("");
+}
+
+function avviaMappaRete() {
+  const el = document.getElementById("mapRete");
+  if (!el || isCardCollapsed(el)) return;
+  initMappaRete();
+  ensureReteData().then(function() {
+    renderMappaRete();
+    // Secondo giro dopo che il disegno si e' assestato: se il contenitore ha
+    // cambiato dimensione nel frattempo, la vista si riadatta.
+    setTimeout(function() {
+      try {
+        state.mapRete.invalidateSize();
+        if (state.reteLayer) {
+          state.mapRete.fitBounds(state.reteLayer.getBounds(), { padding: [12, 12] });
+        }
+      } catch {}
+    }, 300);
+  });
 }
 
 /* ────────────────── filter badges ────────────────── */
