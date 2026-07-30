@@ -1902,6 +1902,15 @@ function scriviNotaMeseInCorso() {
     }
   }
 
+  // E se la tabella della copertura non e' arrivata, va detto che il controllo
+  // non ha potuto girare, invece di lasciar credere che sia andato bene.
+  if (coperturaNonVerificabile()) {
+    avvisi.push("Non è stato possibile verificare su quante giornate del mese " +
+      "esiste questa categoria: la tabella di copertura non è disponibile. " +
+      "Alcune categorie compaiono in pochissimi giorni, e per quelle la " +
+      "percentuale mensile non descrive il mese.");
+  }
+
   // Un filtro acceso che non filtra va detto qui, non lasciato indovinare.
   const inerti = filtriNonApplicabiliAllaTratta();
   if (inerti.length) {
@@ -3762,6 +3771,13 @@ async function loadCoperturaCategoria(primaryBase) {
     ...candidateFilePaths(base, "copertura_categoria.csv"),
     ...candidateFilePaths("data/", "copertura_categoria.csv")
   ]));
+  // Se il file non arriva si torna null, non una mappa vuota, e la differenza
+  // conta: una mappa vuota vuol dire "nessuna categoria e' mal coperta" e fa
+  // ridisegnare tranquillamente il 52,5% delle Frecce ricavato da un giorno.
+  // Provato facendo fallire apposta la richiesta: senza questa distinzione la
+  // dashboard tornava al difetto in silenzio, con la nota che taceva e la data
+  // di build al suo posto, cioe' senza un solo segnale che qualcosa mancava.
+  if (t === null || t === undefined) return null;
   const mappa = new Map();
   for (const r of (t ? parseCSV(t) : [])) {
     const cat = String(r.categoria || "");
@@ -3793,6 +3809,11 @@ function mesiPocheGiornate() {
     if (o.giorniMese > 0 && o.giorni < o.giorniMese * QUOTA_GIORNI_MINIMA) fuori.add(mese);
   }
   return fuori;
+}
+
+/** Vero quando si filtra per categoria senza sapere quante giornate copre. */
+function coperturaNonVerificabile() {
+  return state.filters.cat !== "all" && !state.coperturaCat;
 }
 
 async function loadAll() {
