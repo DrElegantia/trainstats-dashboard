@@ -158,10 +158,27 @@ if not h.empty and not km.empty and "cancellate_tot" in km.columns:
 # silver delle fermate non esiste, e dal 2026 la sorgente non lo consente piu'.
 import os as _os
 _mesi_fermate = sorted(glob.glob("data/gold/fermate/*.parquet"))
+
+# Si scelgono gli ultimi tre mesi a copertura PIENA, non gli ultimi tre in
+# ordine di data. Il ramo delle fermate e' congelato al 26 luglio 2026, quindi
+# gli ultimi tre restano per sempre 2026-05, 2026-06 (29 giorni su 30, perche'
+# il dump del 28 giugno e' arrivato nel formato nuovo e non porta le fermate) e
+# 2026-07 (25 su 31). Due su tre venivano saltati dalla guardia sulla copertura
+# parziale, e il confronto si riduceva per sempre a un mese solo: un invariante
+# che ha smesso di controllare senza dirlo.
+def _copertura_piena(_percorso: str) -> bool:
+    try:
+        _c = pd.read_parquet(_percorso, columns=["giorni_coperti", "giorni_attesi"])
+        return int(_c["giorni_coperti"].iloc[0]) >= int(_c["giorni_attesi"].iloc[0])
+    except Exception:
+        return False
+
+
+_pieni = [_f for _f in _mesi_fermate if _copertura_piena(_f)]
 if _mesi_fermate:
     _peggiore = 0.0
     _dettaglio = ""
-    for _f in _mesi_fermate[-3:]:
+    for _f in (_pieni or _mesi_fermate)[-3:]:
         _chiave = _os.path.basename(_f)[:7]
         _staz = f"{GOLD}/stazioni_mese_categoria_nodo/{_chiave}.parquet"
         _nomi = "docs/data/station_names.csv"
