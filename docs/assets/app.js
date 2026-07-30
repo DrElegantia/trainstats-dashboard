@@ -172,9 +172,24 @@ function getCachedOrFilter(slot, filterFn) {
   return _filterCache[slot];
 }
 
+/* Margini ridotti per lo schermo del telefono, dove ogni pixel tolto al bordo
+ * e' un pixel dato al grafico.
+ *
+ * Il margine destro pero' non puo' scendere a dieci. Su un iPhone da 390 punti,
+ * misurato: l'ultima etichetta dell'asse dei mesi, "07/26", sbordava di tre
+ * pixel e si leggeva "07/2", ed e' proprio il mese in corso, il primo che uno
+ * cerca. Peggio sull'istogramma con la cumulata, dove la scala percentuale del
+ * secondo asse usciva fino a dieci pixel: quel grafico chiedeva ventotto e ne
+ * riceveva dieci lo stesso, perche' il tetto schiacciava anche un valore che il
+ * chiamante aveva gia' calcolato apposta per il telefono.
+ *
+ * Ventotto e' il massimo che i chiamanti chiedono, quindi ora nessuno viene
+ * ridotto sotto cio' che gli serve: chi passa venti tiene venti, chi passa
+ * ventotto tiene ventotto. Sul telefono l'area del grafico si stringe di dieci
+ * pixel, che e' il prezzo di un asse leggibile. */
 function mobileChartMargins(desktop) {
   if (!isMobile()) return desktop;
-  return { l: Math.min(desktop.l || 50, 35), r: Math.min(desktop.r || 20, 10), t: Math.min(desktop.t || 10, 5), b: Math.min(desktop.b || 50, 40) };
+  return { l: Math.min(desktop.l || 50, 35), r: Math.min(desktop.r || 20, 28), t: Math.min(desktop.t || 10, 5), b: Math.min(desktop.b || 50, 40) };
 }
 
 /** On mobile, purge old Plotly chart before re-rendering to free memory. */
