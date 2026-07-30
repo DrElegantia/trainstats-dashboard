@@ -1758,6 +1758,7 @@ function getFilteredSeriesRows() {
 function seriesMonthly() {
   const rows = getFilteredSeriesRows();
   const out = aggregateByMonth(rows);
+  const scarsi = mesiPocheGiornate();
   return {
     x: out.map((o) => fmtMonthShort(o.key)),
     // Stessa riserva del Delay Index, ma solo quando la metrica e' una
@@ -1766,6 +1767,10 @@ function seriesMonthly() {
     y: out.map((o) => {
       if (o.vuoto) return null;
       if (getMetricMode() === "pct" && o.mis < SOGLIA_CORSE_SIGNIFICATIVE) return null;
+      // Un mese descritto da due o tre giornate non ha una percentuale mensile,
+      // per quante corse contengano quelle giornate. Il conteggio invece resta
+      // vero, quindi si nasconde solo la percentuale.
+      if (getMetricMode() === "pct" && scarsi.has(o.key)) return null;
       return computeValue(o.corse, o.rit, o.min, o.sopp, o.canc, o.mis);
     })
   };
@@ -1774,6 +1779,7 @@ function seriesMonthly() {
 function seriesDelayIndex() {
   const rows = getFilteredSeriesRows();
   const out = aggregateByMonth(rows);
+  const scarsi = mesiPocheGiornate();
   return {
     x: out.map((o) => fmtMonthShort(o.key)),
     // I due addendi devono descrivere insiemi disgiunti, altrimenti l'indice
@@ -1792,6 +1798,7 @@ function seriesDelayIndex() {
       // servizio impazzito, mentre e' solo una tratta con tre corse al mese.
       // Sotto la soglia il punto non si disegna, come per i mesi assenti.
       if (o.corse < SOGLIA_CORSE_SIGNIFICATIVE) return null;
+      if (scarsi.has(o.key)) return null;
       return o.corse > 0 ? ((o.ritEff + o.canc) / o.corse) * 100 : 0;
     })
   };
@@ -1863,6 +1870,21 @@ function scriviNotaMeseInCorso() {
     avvisi.push(nascosti === mesi.length
       ? `Nessun mese ha almeno ${SOGLIA_CORSE_SIGNIFICATIVE} corse: su numeri così piccoli una percentuale vale 0 o 100 a seconda della singola corsa, quindi non viene disegnata.`
       : `${nascosti} mesi su ${mesi.length} hanno meno di ${SOGLIA_CORSE_SIGNIFICATIVE} corse e non sono disegnati: la percentuale lì non direbbe nulla.`);
+  }
+
+  // I mesi in cui la categoria scelta esiste su una manciata di giornate. Non
+  // e' un caso di pochi dati: e' un caso di dati non rappresentativi, e va detto
+  // con la sua causa, altrimenti sembra un guasto.
+  const scarsi = mesiPocheGiornate();
+  if (scarsi.size) {
+    const dentro = mesi.filter((o) => scarsi.has(o.key));
+    if (dentro.length) {
+      const esempio = state.coperturaCat.get(String(state.filters.cat)).get(dentro[0].key);
+      avvisi.push(`Questa categoria compare solo in alcune giornate del mese ` +
+        `(${esempio.giorni} su ${esempio.giorniMese} in ${fmtMonthShort(dentro[0].key)}): ` +
+        `i conteggi sono veri, le percentuali non descrivono il mese e non vengono disegnate. ` +
+        `Dipende dalla sorgente, che nel formato usato fino a giugno 2026 non pubblica le Frecce.`);
+    }
   }
 
   // Un filtro acceso che non filtra va detto qui, non lasciato indovinare.
@@ -3707,6 +3729,57 @@ async function loadCapoluoghiAnyBase(primaryBase) {
   return [];
 }
 
+/* Su quante giornate del mese esiste ciascuna categoria.
+ *
+ * Serve a distinguere "poche corse" da "poche giornate". La soglia delle trenta
+ * corse copre il primo caso, non il secondo, e sono difetti diversi: con poche
+ * corse la percentuale e' instabile, con poche giornate e' non rappresentativa,
+ * e la seconda cosa non si aggiusta aspettando piu' dati.
+ *
+ * Il caso che ha portato a questa tabella: la sorgente pubblica due formati, e
+ * quello vecchio non contiene le Frecce. Su 2.481 giorni di storico i giorni in
+ * formato nuovo sono sei, e le Frecce esistono solo li'. Chi scegliesse
+ * "FR - Freccia Rossa" leggeva "52,5% in ritardo a giugno 2026": le 202 corse
+ * superavano la soglia, e venivano tutte dal 28 giugno. */
+async function loadCoperturaCategoria(primaryBase) {
+  const base = ensureTrailingSlash(primaryBase);
+  const t = await fetchTextAny(uniq([
+    ...candidateFilePaths(base, "copertura_categoria.csv"),
+    ...candidateFilePaths("data/", "copertura_categoria.csv")
+  ]));
+  const mappa = new Map();
+  for (const r of (t ? parseCSV(t) : [])) {
+    const cat = String(r.categoria || "");
+    const mese = String(r.mese || "").slice(0, 7);
+    if (!mese) continue;
+    if (!mappa.has(cat)) mappa.set(cat, new Map());
+    mappa.get(cat).set(mese, {
+      giorni: toNum(r.giorni_con_dati),
+      giorniMese: toNum(r.giorni_nel_mese)
+    });
+  }
+  return mappa;
+}
+
+/* Quota minima di giornate del mese perche' una percentuale sia rappresentativa.
+ * Sotto un terzo il mese e' descritto da una manciata di giorni, che possono
+ * essere tutti feriali o tutti festivi: il numero resta preciso e non dice
+ * niente sul mese. */
+const QUOTA_GIORNI_MINIMA = 1 / 3;
+
+/** I mesi in cui la categoria scelta copre troppe poche giornate. */
+function mesiPocheGiornate() {
+  const cat = state.filters.cat;
+  if (cat === "all" || !state.coperturaCat) return new Set();
+  const perMese = state.coperturaCat.get(String(cat));
+  if (!perMese) return new Set();
+  const fuori = new Set();
+  for (const [mese, o] of perMese) {
+    if (o.giorniMese > 0 && o.giorni < o.giorniMese * QUOTA_GIORNI_MINIMA) fuori.add(mese);
+  }
+  return fuori;
+}
+
 async function loadAll() {
   setMeta("Caricamento dati...");
 
@@ -3817,6 +3890,8 @@ async function loadAll() {
       .map((r) => normalizeText(normalizeStationName(r.citta || r.capoluogo || r.nome || r.city || "")))
       .filter(Boolean)
   );
+
+  state.coperturaCat = await loadCoperturaCategoria(base);
 
   // Enable tap-to-show tooltips on mobile
   document.querySelectorAll(".info-tip[data-tooltip]").forEach(function(tip) {

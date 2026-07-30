@@ -167,6 +167,15 @@ def copy_root_files(target_dir: Path) -> None:
             print(f"Copied capoluoghi_provincia.csv from {src}")
             break
 
+    # Su quanti giorni del mese esiste ciascuna categoria. Trentadue kilobyte che
+    # servono a non pronunciarsi su una categoria presente in una giornata sola:
+    # senza questa tabella la dashboard diceva "Frecciarossa, 52,5% in ritardo a
+    # giugno 2026" ricavandolo dal solo 28 giugno.
+    cop = Path("data") / "gold" / "copertura_categoria.csv"
+    if cop.exists():
+        shutil.copy2(cop, target_dir / "copertura_categoria.csv")
+        print(f"Copied copertura_categoria.csv ({cop.stat().st_size // 1024} KB)")
+
     # La classifica per chilometro. E' l'unica tabella pubblicata che non e'
     # filtrabile: i chilometri non dipendono dall'anno o dalla categoria, e la
     # durata media di una tratta calcolata su tre corse non vorrebbe dire nulla.

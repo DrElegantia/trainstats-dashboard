@@ -85,7 +85,13 @@ def run(start: date, end: date) -> None:
 
     # 4. Costruisci dimensione stazioni
     call([sys.executable, "-m", "scripts.build_station_dim"])
-    
+
+    # 4-bis. Su quante giornate del mese esiste ciascuna categoria. Va qui e non
+    # fuori dal notturno, al contrario del ramo fermate: legge il silver, che il
+    # passo 2 ha appena riscritto, e se resta ferma la dashboard smette di sapere
+    # quali percentuali per categoria sono rappresentative del mese.
+    call([sys.executable, "-m", "scripts.copertura_categoria", "--months", *months])
+
     # 5. Copia tutto in docs/data per GitHub Pages
     call([sys.executable, "-m", "scripts.build_site"])
 
