@@ -51,7 +51,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from .silver_schema import parse_treni_payload
+from .silver_schema import _categoria, parse_treni_payload
 from .transform_silver import list_bronze_files_for_range
 from .utils import date_range_inclusive, ensure_dir, normalize_station_name
 
@@ -144,7 +144,12 @@ def fermate_di_un_giorno(csv_gz: str, meta_path: str, giorno: date) -> pd.DataFr
                 continue
             ultimo = len(fr) - 1
             numero = str(t.get("n", "")).strip()
-            categoria = str(t.get("c", "")).strip()
+            # Stessa regola del ramo principale: per l'alta velocita' il campo
+            # `c` e' vuoto e la sigla sta in `sub`. Senza questa riga le tratte
+            # per fermata avrebbero le Frecce senza categoria mentre i capolinea
+            # le hanno, e il filtro darebbe due risposte diverse sulla stessa
+            # corsa a seconda della vista.
+            categoria = _categoria(t)
             origine = normalize_station_name(str(t.get("p", "")))
             destinazione = normalize_station_name(str(t.get("a", "")))
             for i, f in enumerate(fr):
