@@ -18,6 +18,13 @@ data/silver_trains/
 # derivato, rigenerato da build_site verso docs/data/.
 data/gold/*.csv
 !data/gold/stations_dim.csv
+# Tredici kilobyte, e il CI non ha modo di ricalcolarli: copertura_categoria si
+# ricava dal silver, che e' ignorato per peso. Il workflow Deploy Site lancia
+# build_site sui soli gold versionati, quindi senza questa eccezione il file non
+# arrivava nell'artefatto Pages e la dashboard chiedeva un CSV che rispondeva
+# 404: tornava a disegnare le percentuali delle categorie presenti in un giorno
+# solo, che e' esattamente cio' che quel file serve a impedire.
+!data/gold/copertura_categoria.csv
 
 # bronze: ignoriamo solo csv non compressi
 data/bronze/**/*.csv
