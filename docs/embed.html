@@ -21,7 +21,16 @@
     <div class="title">
       <h1>TrainStats Dashboard</h1>
     </div>
-    <a class="embed-fullscreen-link" href="https://drelegantia.github.io/trainstats-dashboard-test/" target="_blank" rel="noopener">Apri completa &#8599;</a>
+    <!-- Senza questo contenitore l'embed non ha dove scrivere la data di build
+         ne' gli errori: setMeta() e i due gestori globali di errore puntano
+         qui, e mancando il div un fallimento totale del caricamento restava
+         invisibile, con la pagina che mostrava solo card vuote. -->
+    <div class="meta" id="metaBox"></div>
+    <!-- La versione intera e' quella del sito, non l'origine su GitHub Pages:
+         l'embed vive dentro umbertobertonelli.it, e "Apri completa" portava
+         fuori, verso un indirizzo che per giunta si chiama "-test". Lo stesso
+         URL del canonical di index.html. -->
+    <a class="embed-fullscreen-link" href="https://www.umbertobertonelli.it/ritardo-treni/" target="_blank" rel="noopener">Apri completa &#8599;</a>
   </header>
 
   <section class="panel filters-panel">
@@ -87,11 +96,11 @@
       <div class="kpiValue" id="kpiLateMin"></div>
     </div>
     <div class="kpi">
-      <div class="kpiLabel">Cancellati</div>
+      <div class="kpiLabel">Cancellati, totali e parziali</div>
       <div class="kpiValue" id="kpiCancelled"></div>
     </div>
     <div class="kpi">
-      <div class="kpiLabel">Soppressi</div>
+      <div class="kpiLabel">di cui soppressi</div>
       <div class="kpiValue" id="kpiSuppressed"></div>
     </div>
   </section>
@@ -103,7 +112,7 @@
         <button class="card-toggle" aria-label="Espandi/Collassa">&#9660;</button>
       </div>
       <div class="card-body">
-        <div class="card-desc">Percentuale mensile di treni in ritardo, cancellati o soppressi sul totale.</div>
+        <div class="card-desc">Percentuale mensile di corse in ritardo, cancellate o soppresse sul totale. Una corsa conta una volta sola.</div>
         <div class="filter-badges" id="badgesDelayIndex"></div>
         <div id="chartDelayIndex" class="chart"></div>
       </div>
@@ -114,9 +123,10 @@
         <button class="card-toggle" aria-label="Espandi/Collassa">&#9660;</button>
       </div>
       <div class="card-body">
-        <div class="card-desc">Andamento mensile delle corse per stato.</div>
+        <div class="card-desc">Andamento mensile della metrica scelta, una linea sola.</div>
         <div class="filter-badges" id="badgesSeries"></div>
         <div id="chartMonthly" class="chart"></div>
+        <div class="note" id="notaMeseParziale"></div>
       </div>
     </div>
   </section>
@@ -131,7 +141,7 @@
         <div class="filter-badges" id="badgesHist"></div>
         <div id="chartHist" class="chart"></div>
         <div id="costIndicator" class="cost-indicator" style="display:none;">
-          <span class="cost-label">Costo stimato pro capite dei ritardi (&gt;5 min) <span class="info-tip" data-tooltip="Stima basata sul PIL pro capite italiano&#10;(~&euro;37.000/anno = &euro;0,0704/minuto).&#10;Conta solo i minuti di ritardo&#10;dei treni con ritardo &gt; 5 minuti.">&#9432;</span></span>
+          <span class="cost-label">Costo stimato dei ritardi (&gt;5 min) <span class="info-tip" data-tooltip="Minuti di ritardo dei treni oltre i 5 minuti,&#10;valorizzati al PIL pro capite italiano&#10;(~&euro;37.000/anno = &euro;0,0704/minuto).&#10;Vale un passeggero per treno: quanti ne&#10;viaggiassero davvero non &egrave; nel dato&#10;di partenza, e non si stima.">&#9432;</span></span>
           <span class="cost-value" id="costValue"></span>
         </div>
       </div>
@@ -247,7 +257,7 @@
 
   <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="assets/app.js?v=241138cc8b"></script>
+  <script src="assets/app.js?v=bd0c904551"></script>
   <script>
   /* ── Override "Apri completa" link if parentUrl is provided ── */
   (function () {

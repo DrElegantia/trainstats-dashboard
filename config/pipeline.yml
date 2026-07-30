@@ -100,7 +100,12 @@ status_rules:
         - "(?i)\\bnon\\s*effettuat"
     suppressed:
       any:
-        - "(?i)\\bsoppress"
+        # "Percorso deviato con fermate soppresse" descrive un treno che ha
+        # viaggiato saltando qualche fermata, non un treno mai partito. Erano
+        # 2.576 corse contate come soppressioni, con la misura del ritardo
+        # buttata via: la precedenza qui sotto assegna "soppresso" per ultimo e
+        # sovrascriveva la classificazione parziale, che e' quella giusta.
+        - "(?i)(?<!fermate )(?<!fermata )\\bsoppress"
     # A partial cancellation describes a train that ran on a shortened route.
     # "Treno cancellato da X a Y. Arriva a X" is the dominant wording in the
     # feed and also matches the generic "cancellat" pattern above, so it is
@@ -115,7 +120,11 @@ status_rules:
         - "(?i)\\bprosegue\\s+da\\b"
         - "(?i)\\bparte\\s+da\\b"
         - "(?i)\\barriva\\s+a\\b"
-        - "(?i)\\bdevia"
+        # "\\bdevia" non c'e' piu': "Percorso deviato con fermate straordinarie"
+        # e' un treno che ha fatto tutto il percorso con qualche fermata in piu',
+        # non una cancellazione. Erano 18.225 corse che gonfiavano del 7,9% il
+        # contatore dei cancellati mostrato in dashboard. La deviazione che
+        # salta fermate resta parziale, la intercetta "fermat[ae] soppress".
     performed:
       default: true
 

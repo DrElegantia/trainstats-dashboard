@@ -1,8 +1,10 @@
 # scripts/build_site.py
 from __future__ import annotations
 
+import glob
 import hashlib
 import json
+import os
 import re
 import shutil
 from datetime import datetime, timezone
@@ -177,6 +179,8 @@ def copy_root_files(target_dir: Path) -> None:
         shutil.copy2(rete, target_dir / "velocita_rete.geojson")
         print(f"Copied velocita_rete.geojson ({rete.stat().st_size // 1024} KB)")
 
+    scrivi_tratte(target_dir)
+
     km = Path("data") / "stations" / "indicatori_km.csv"
     if km.exists():
         colonne = ["partenza", "arrivo", "km", "qualita_km", "corse",
@@ -184,12 +188,122 @@ def copy_root_files(target_dir: Path) -> None:
                    "ritardo_per_100km", "km_h_programmati", "km_h_effettivi",
                    # Quali tratte attraversano lo Stretto lo sa solo la
                    # pipeline, che ha il grafo della rete: nel browser non c'e'.
-                   "attraversa_stretto"]
+                   "attraversa_stretto",
+                   # Su quanti mesi poggia la media, e fra quali estremi. Senza
+                   # queste tre colonne la classifica mette sulla stessa scala
+                   # una tratta osservata per sei anni e una esistita sette mesi
+                   # sparsi, e il lettore non ha modo di distinguerle.
+                   "mesi", "primo_mese", "ultimo_mese"]
         d = pd.read_csv(km)
         d = d[[c for c in colonne if c in d.columns]]
         # Due decimali bastano: il file scende da 200 a 90 KB.
         d.to_csv(target_dir / "indicatori_km.csv", index=False, float_format="%.2f")
         print(f"Wrote indicatori_km.csv ({len(d)} tratte)")
+
+
+def slug_stazione(nome: str) -> str:
+    """Il nome di una stazione ridotto a un nome di file prevedibile.
+
+    Deve dare lo stesso risultato qui e nel browser, perche' e' l'unico ponte
+    fra la stazione scelta nella tendina e il file da scaricare.
+    """
+    import re
+    import unicodedata
+
+    s = unicodedata.normalize("NFKD", str(nome)).encode("ascii", "ignore").decode()
+    s = re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()
+    return s or "senza-nome"
+
+
+def scrivi_tratte(target_dir: Path) -> None:
+    """Pubblica le tratte per fermata, un file per stazione di partenza.
+
+    La tabella intera sono cinque milioni di righe: nessun browser la scarica.
+    Ma chi guarda una tratta ha gia' scelto da dove parte, e le righe che gli
+    servono sono solo quelle: divisa per stazione di partenza, la piu' grossa
+    (Roma Termini) sta in meno di due megabyte e tutte le altre in molto meno.
+
+    La colonna `da` non viene scritta: e' costante dentro ogni file, e ripeterla
+    su ogni riga costerebbe piu' dei dati.
+    """
+    sorgente = sorted(glob.glob(os.path.join("data", "gold", "tratte", "*.parquet")))
+    if not sorgente:
+        return
+
+    d = pd.concat([pd.read_parquet(f) for f in sorgente], ignore_index=True)
+    if d.empty:
+        return
+
+    cartella = target_dir / "tratte"
+    if cartella.exists():
+        shutil.rmtree(cartella)
+    cartella.mkdir(parents=True, exist_ok=True)
+
+    # Tre colonne del gold non si pubblicano, e su milioni di righe pesano
+    # quanto un quinto della cartella:
+    #   oltre_5      coincide con in_ritardo, perche' la soglia di puntualita'
+    #                e' quattro minuti e i valori sono interi: il browser lo
+    #                ricava da se'
+    #   in_orario    e' con_misura meno in_ritardo meno in_anticipo, idem
+    #   ritardo_medio non serve a nessuno per riga: la media va ripesata sulle
+    #                corse ogni volta che si sommano piu' mesi o piu' categorie,
+    #                e la dashboard la ottiene dividendo i totali dell'aggregato
+    colonne = ["mese", "a", "categoria", "corse", "con_misura", "in_ritardo",
+               "in_anticipo", "fermate_soppresse", "oltre_10",
+               "oltre_15", "oltre_30", "oltre_60", "minuti_ritardo_tot"]
+    colonne = [c for c in colonne if c in d.columns]
+
+    indice = {}
+    peso = 0
+    for partenza, gruppo in d.groupby("da", sort=False):
+        s = slug_stazione(partenza)
+        fuori = cartella / f"{s}.csv"
+        gruppo[colonne].sort_values(["mese", "a", "categoria"]).to_csv(
+            fuori, index=False, float_format="%.2f")
+        peso += fuori.stat().st_size
+        indice[str(partenza)] = s
+
+    with open(target_dir / "tratte_indice.json", "w", encoding="utf-8") as f:
+        json.dump(indice, f, ensure_ascii=False, separators=(",", ":"))
+    print(f"Wrote tratte/: {len(indice):,} stazioni di partenza, {peso / 1e6:.0f} MB")
+
+
+def _quota_misure_scartate():
+    """La quota di corse partite la cui misura di arrivo non e' utilizzabile.
+
+    Era scritta a mano sotto l'istogramma ("il 3,5% delle corse effettuate") e
+    non corrispondeva piu' al dato. Una percentuale battuta nell'HTML invecchia
+    a ogni aggiornamento senza che nessuno se ne accorga, quindi ora si
+    ricalcola a ogni build e il browser la legge dal manifest.
+
+    Si conta sull'istogramma, che e' il grafico a cui la frase si riferisce,
+    invece che ricombinando i KPI: il bucket "missing" e' per costruzione cio'
+    che il grafico non riesce a mostrare, e il denominatore e' tutto il resto
+    tranne la barra delle corse non effettuate, che una misura non puo' averla.
+
+    La versione precedente faceva `effettuate - corse_con_misura` e sbagliava
+    di 229.627 corse: `corse_con_misura` comprende anche le parzialmente
+    cancellate (stanno in `delay_states`), mentre `effettuate` le esclude, e
+    numeratore e denominatore parlavano di due popolazioni diverse.
+    """
+    try:
+        from .build_gold import ETICHETTA_NON_EFFETTUATE, ETICHETTA_PARZIALI, read_gold_table
+
+        h = read_gold_table("hist_mese_categoria")
+        conteggi = h.groupby("bucket_ritardo_arrivo")["count"].sum()
+        scartate = float(conteggi.get("missing", 0.0))
+        # Fuori dal denominatore anche le parzialmente cancellate: da quando
+        # hanno una barra loro, "missing" contiene solo corse arrivate a
+        # destinazione senza una misura utilizzabile, e il rapporto deve
+        # confrontarle con le altre arrivate a destinazione.
+        partite = float(conteggi.sum()
+                        - conteggi.get(ETICHETTA_NON_EFFETTUATE, 0.0)
+                        - conteggi.get(ETICHETTA_PARZIALI, 0.0))
+        if partite <= 0 or scartate < 0:
+            return None
+        return round(100.0 * scartate / partite, 2)
+    except Exception:
+        return None
 
 
 def main() -> None:
@@ -248,9 +362,15 @@ def main() -> None:
     # all'asse: non e' un intervallo di minuti, e' il caso peggiore. Prima
     # finivano nel bucket dei dati mancanti e la distribuzione non le mostrava,
     # pur contandole nei totali in testa alla pagina.
-    from .build_gold import ETICHETTA_NON_EFFETTUATE
-    if bucket_labels and ETICHETTA_NON_EFFETTUATE not in bucket_labels:
-        bucket_labels = list(bucket_labels) + [ETICHETTA_NON_EFFETTUATE]
+    # In coda vanno due classi, non una. Le parzialmente cancellate sono partite,
+    # quindi non stanno con le non effettuate, ma non sono arrivate dove
+    # dovevano, quindi il loro scostamento non e' confrontabile: prima finivano
+    # nelle barre normali, 207.778 su 211.036, e 52.485 comparivano fra gli
+    # arrivi in anticipo perche' fermarsi prima fa arrivare prima.
+    from .build_gold import ETICHETTA_NON_EFFETTUATE, ETICHETTA_PARZIALI
+    for coda in (ETICHETTA_PARZIALI, ETICHETTA_NON_EFFETTUATE):
+        if bucket_labels and coda not in bucket_labels:
+            bucket_labels = list(bucket_labels) + [coda]
 
     manifest = {
         "built_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
@@ -263,6 +383,10 @@ def main() -> None:
         "years": sorted(y for y in years if y.isdigit()),
         "station_names_file": "station_names.csv",
     }
+
+    quota = _quota_misure_scartate()
+    if quota is not None:
+        manifest["pct_misure_scartate"] = quota
 
     copy_root_files(target)
     if (target / "indicatori_km.csv").exists():

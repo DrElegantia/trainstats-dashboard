@@ -89,6 +89,18 @@ def run(start: date, end: date) -> None:
     # 5. Copia tutto in docs/data per GitHub Pages
     call([sys.executable, "-m", "scripts.build_site"])
 
+    # Il ramo delle fermate (transform_fermate, build_gold_fermate,
+    # build_gold_tratte) NON sta qui, e non e' una dimenticanza. Vive sul campo
+    # `fr` del payload legacy, che la sorgente ha smesso di pubblicare: la
+    # copertura finisce al 26 luglio 2026 e non avanzera' piu'. Rilanciarlo ogni
+    # notte rifarebbe lo stesso identico risultato bruciando un'ora di CI.
+    #
+    # Perche' allora le tratte compaiono sul sito? Perche' data/gold/tratte/ e'
+    # versionato, e build_site qui sopra lo ripubblica a ogni giro. E' una
+    # fotografia versionata, non un derivato che si rigenera: se sparisse dal
+    # repo la CI non saprebbe ricostruirla, perche' data/silver_fermate/ (1,2 GB)
+    # e' ignorato per peso.
+
 
 def main(start: Optional[str], end: Optional[str]) -> None:
     cfg = load_yaml("config/pipeline.yml")

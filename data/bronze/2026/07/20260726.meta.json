@@ -1,0 +1,20 @@
+{
+  "reference_date": "2026-07-26",
+  "range_start": "2026-07-26",
+  "range_end": "2026-07-26",
+  "extracted_at_utc": "2026-07-28T15:27:51Z",
+  "source_url": "dump_storico:dati_2026_07_26.json",
+  "source_path": "/tmp/claude-501/-Users-umbertobertonelli-claude/21967e54-8865-4456-a2ae-405bf79b3348/scratchpad/dump_mag_lug/dati_2026_07_26.json",
+  "bytes": 10048431,
+  "header": [
+    "giorno",
+    "timeZone",
+    "riassunto",
+    "avvisiRFI",
+    "avvisiTI",
+    "treni"
+  ],
+  "mode": "day",
+  "treni": 5723,
+  "sha256": "e6768b9a81b69216d973eb75e777812736d8d5dea4e07d707dbdd331929ce5b6"
+}

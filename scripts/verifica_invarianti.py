@@ -101,6 +101,24 @@ for t in ["kpi_mese", "kpi_mese_categoria", "stazioni_mese_categoria_ruolo", "od
                > pd.to_numeric(df["corse_osservate"], errors="coerce")).sum())
     check(f"corse_con_misura <= corse_osservate ({t})", bad == 0, f"{bad} righe")
 
+# 5-bis. gli addendi dell'indice ritardo devono restare disgiunti.
+#
+# L'indice somma le corse in ritardo a quelle mancate. `in_ritardo` comprende
+# anche le parzialmente cancellate, che stanno gia' in `cancellate_tot`: se la
+# dashboard tornasse a usare quella colonna, conterebbe due volte le stesse
+# corse, come faceva prima (0,73 punti percentuali). `in_ritardo_effettuate`
+# esiste per questo, e deve restare per costruzione non piu' grande di
+# `in_ritardo` e disgiunta dalle cancellate.
+for t in ["kpi_mese", "kpi_mese_categoria", "od_mese_categoria"]:
+    df = read_table(t)
+    if df.empty or "in_ritardo_effettuate" not in df.columns:
+        continue
+    num = lambda c: pd.to_numeric(df[c], errors="coerce").fillna(0)
+    troppo = int((num("in_ritardo_effettuate") > num("in_ritardo")).sum())
+    oltre = int((num("in_ritardo_effettuate") + num("cancellate_tot") > num("corse_osservate")).sum())
+    check(f"indice ritardo con addendi disgiunti ({t})", troppo == 0 and oltre == 0,
+          f"{troppo} righe sopra in_ritardo, {oltre} righe oltre le corse osservate")
+
 # 6. le cancellazioni non possono essere zero su un mese intero
 km = read_table("kpi_mese")
 if not km.empty and "non_effettuate" in km.columns:
@@ -108,6 +126,73 @@ if not km.empty and "non_effettuate" in km.columns:
     n = int((zero_months == 0).sum())
     check("nessun mese con zero non effettuate", n == 0,
           f"{n} mesi su {len(zero_months)}" + (f" -> {list(zero_months[zero_months==0].index)[:6]}" if n else ""))
+
+# 6-bis. l'istogramma deve mostrare tutte le corse cancellate, non solo meta'.
+#
+# Il contatore in testa alla pagina diceva 404.343 fra totali e parziali,
+# l'ultima barra ne mostrava 193.307: le 211.036 parzialmente cancellate erano
+# spalmate fra le barre di chi era arrivato a destinazione, e 52.485 comparivano
+# addirittura fra gli arrivi in anticipo, perche' un treno limitato a meta'
+# percorso arriva prima. Le due classi in coda all'asse devono ricomporre
+# esattamente cancellate_tot dei KPI.
+h = read_table("hist_mese_categoria")
+if not h.empty and not km.empty and "cancellate_tot" in km.columns:
+    per_classe = h.groupby("bucket_ritardo_arrivo")["count"].sum()
+    code = float(per_classe.get("non effettuate", 0)) + float(per_classe.get("parzialmente cancellate", 0))
+    atteso = float(km["cancellate_tot"].sum())
+    check("istogramma e KPI concordano sulle cancellate", abs(code - atteso) < 1,
+          f"istogramma {code:,.0f} contro KPI {atteso:,.0f}")
+    # E la somma di tutte le classi deve restare il totale delle corse.
+    tot_h = float(per_classe.sum())
+    tot_k = float(km["corse_osservate"].sum())
+    check("l'istogramma copre tutte le corse osservate", abs(tot_h - tot_k) < 1,
+          f"istogramma {tot_h:,.0f} contro KPI {tot_k:,.0f}")
+
+# 6-ter. il ramo delle fermate deve raccontare gli stessi capolinea.
+#
+# Le due pipeline leggono lo stesso bronze da due strade diverse: una prende
+# origine e destinazione dalle colonne, l'altra le ricava dalla prima e
+# dall'ultima fermata del payload. Sui capolinea devono dire la stessa cosa, e
+# se un giorno divergono e' un errore di estrazione, non una differenza di
+# metodo. Il controllo si salta dove il ramo non e' stato costruito: in CI il
+# silver delle fermate non esiste, e dal 2026 la sorgente non lo consente piu'.
+import os as _os
+_mesi_fermate = sorted(glob.glob("data/gold/fermate/*.parquet"))
+if _mesi_fermate:
+    _peggiore = 0.0
+    _dettaglio = ""
+    for _f in _mesi_fermate[-3:]:
+        _chiave = _os.path.basename(_f)[:7]
+        _staz = f"{GOLD}/stazioni_mese_categoria_nodo/{_chiave}.parquet"
+        _nomi = "docs/data/station_names.csv"
+        if not (_os.path.exists(_staz) and _os.path.exists(_nomi)):
+            continue
+        _fm = pd.read_parquet(_f)
+        # Un mese che la sorgente ha pubblicato a meta' non si puo' confrontare
+        # con un mese intero: a dicembre 2025 le fermate coprono ventuno giorni
+        # su trentuno, e Roma Termini risultava a 13.235 contro 19.522, cioe'
+        # esattamente quel rapporto. Non e' un errore di estrazione, e un
+        # controllo che lo chiama errore insegna a ignorare i controlli.
+        if "giorni_coperti" in _fm.columns and "giorni_attesi" in _fm.columns:
+            _cop, _att = int(_fm["giorni_coperti"].iloc[0]), int(_fm["giorni_attesi"].iloc[0])
+            if _att and _cop < _att:
+                continue
+        _n = pd.read_csv(_nomi)
+        _m = dict(zip(_n.iloc[:, 0], _n.iloc[:, 1]))
+        _k = pd.read_parquet(_staz)
+        _k["nome"] = _k["cod_stazione"].map(_m).astype(str)
+        _a = _k.groupby("nome")["corse_osservate"].sum()
+        _b = _fm.groupby("nome_stazione")["volte_capolinea"].sum()
+        for _st in ["MILANO CENTRALE", "ROMA TERMINI", "NAPOLI CENTRALE"]:
+            _x, _y = float(_a.get(_st, 0)), float(_b.get(_st, 0))
+            if _x <= 0:
+                continue
+            _scarto = abs(_y - _x) / _x
+            if _scarto > _peggiore:
+                _peggiore, _dettaglio = _scarto, f"{_st} {_chiave}: {_y:,.0f} contro {_x:,.0f}"
+    if _dettaglio:
+        check("fermate e capolinea concordano sui grandi nodi", _peggiore <= 0.05,
+              f"scarto massimo {100 * _peggiore:.1f}% ({_dettaglio})")
 
 # 7. la categoria non deve contenere etichette spurie
 kmc = read_table("kpi_mese_categoria")
@@ -147,6 +232,41 @@ if os.path.exists("docs/data/manifest.json"):
     check("station_names.csv pubblicato", os.path.exists("docs/data/station_names.csv"))
 else:
     check("manifest presente", False, "docs/data/manifest.json assente")
+
+# 10. il ramo delle tratte per fermata
+#
+# La dashboard filtra queste righe per categoria e le somma per coppia: due
+# cose devono reggere, o mostra numeri sbagliati senza avvisare. Che la soglia
+# sia contata sulla coppia e non sulla singola categoria, altrimenti il totale
+# "tutte le categorie" perde le corse delle categorie rare senza dirlo. E che
+# il vocabolario delle categorie sia lo stesso della vista per capolinea,
+# perche' il menu a tendina viene da li': una sigla presente solo qui sarebbe
+# una riga che nessun filtro puo' mai selezionare, e resterebbe invisibile.
+_tratte = sorted(glob.glob("data/gold/tratte/*.parquet"))
+if _tratte:
+    _campione = _tratte[-3:]
+    _sotto = 0
+    _righe = 0
+    _cat_tratte = set()
+    for _f in _campione:
+        _d = pd.read_parquet(_f, columns=["mese", "da", "a", "categoria", "corse"])
+        _righe += len(_d)
+        _per_coppia = _d.groupby(["da", "a"], observed=True)["corse"].sum()
+        _sotto += int((_per_coppia < 30).sum())
+        _cat_tratte |= set(_d["categoria"].astype(str).unique())
+        if _d[["mese", "da", "a", "categoria"]].duplicated().any():
+            _sotto += 1
+    check("le tratte rispettano la soglia sulla coppia", _sotto == 0,
+          f"{_righe:,} righe su {len(_campione)} mesi, nessuna coppia sotto le 30 corse"
+          if _sotto == 0 else f"{_sotto} coppie sotto soglia o chiavi duplicate")
+
+    _kmc = read_table("kpi_mese_categoria")
+    if not _kmc.empty:
+        _cat_cap = set(_kmc["categoria"].astype(str).fillna("").unique()) | {""}
+        _orfane = sorted(c for c in _cat_tratte if c not in _cat_cap and c != "nan")
+        check("le categorie delle tratte esistono nel menu", not _orfane,
+              f"{len(_cat_tratte)} categorie, tutte selezionabili" if not _orfane
+              else f"non selezionabili: {_orfane}")
 
 print()
 fails = [n for n, ok, _ in esiti if not ok]

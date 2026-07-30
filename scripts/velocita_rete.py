@@ -45,10 +45,16 @@ INDICATORI = os.path.join("data", "stations", "indicatori_km.csv")
 # copia, come fa per l'anagrafica delle stazioni.
 USCITA = os.path.join("data", "stations", "velocita_rete.geojson")
 
-# Sotto questa soglia di corse il tratto non entra in mappa: un collegamento
-# raro non dice niente sulla rete, e riempirebbe la cartina di linee che
-# nessuno percorre davvero.
+# Rete di sicurezza, non un filtro attivo: ogni tratta in ingresso ha gia'
+# almeno MIN_CORSE corse (indicatori_km ne scarta di meno), e un tratto di
+# binario ne raccoglie la somma, quindi oggi non esclude nulla. Resta a
+# presidiare il caso in cui quella soglia a monte venga abbassata.
 MIN_CORSE_TRATTO = 300
+
+# Quanto il cammino ricostruito su OpenStreetMap puo' discostarsi dai
+# chilometri con cui e' stata calcolata la velocita' prima di considerare che
+# le due fonti stiano descrivendo viaggi diversi.
+MAX_SCARTO_PERCORSO = 0.20
 # Tolleranza di semplificazione della geometria, in gradi. Un centesimo di
 # grado e' circa 1,1 km in latitudine: troppo. Un millesimo e' 110 metri, che a
 # scala nazionale non si distingue e taglia il file di un ordine di grandezza.
@@ -108,14 +114,21 @@ def _semplifica(punti: List[Tuple[float, float]], tol: float) -> List[Tuple[floa
         ax, ay = punti[i]
         bx, by = punti[j]
         dx, dy = bx - ax, by - ay
-        norma = math.hypot(dx, dy)
+        quadrato = dx * dx + dy * dy
         peggiore, indice = 0.0, -1
         for k in range(i + 1, j):
             px, py = punti[k]
-            if norma == 0:
+            if quadrato == 0:
                 d = math.hypot(px - ax, py - ay)
             else:
-                d = abs(dy * px - dx * py + bx * ay - by * ax) / norma
+                # Distanza dal SEGMENTO, non dalla retta infinita che lo
+                # contiene. Con la retta, un tratto che va e torna sulla stessa
+                # direttrice ha tutti i punti allineati e veniva schiacciato sui
+                # due estremi: un'andata e ritorno di trentacinque chilometri si
+                # riduceva a un segmento di otto metri.
+                t = ((px - ax) * dx + (py - ay) * dy) / quadrato
+                t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+                d = math.hypot(px - (ax + t * dx), py - (ay + t * dy))
             if d > peggiore:
                 peggiore, indice = d, k
         if peggiore > tol and indice > 0:
@@ -188,19 +201,38 @@ def main() -> None:
     corse: Dict[Tuple, float] = defaultdict(float)
 
     per_partenza: Dict[str, List] = defaultdict(list)
+    fuori_grafo: List[Tuple[str, str, float]] = []
     for _, r in tratte.iterrows():
         a, b = str(r["partenza"]), str(r["arrivo"])
         if a in agganci and b in agganci:
-            per_partenza[a].append((b, float(r["km_h_programmati"]), float(r["corse"])))
+            per_partenza[a].append((b, float(r["km_h_programmati"]),
+                                    float(r["corse"]), float(r["km"])))
+        else:
+            fuori_grafo.append((a, b, float(r["corse"])))
 
     disegnate = 0
+    senza_percorso: List[Tuple[str, str, float]] = []
+    incoerenti: List[Tuple[str, str, float, float, float]] = []
     for i, (a, elenco) in enumerate(sorted(per_partenza.items()), 1):
-        obiettivi = {agganci[b] for b, _, _ in elenco}
-        _, prima = _dijkstra_con_percorso(grafo, agganci[a], obiettivi)
-        for b, kmh, n in elenco:
+        obiettivi = {agganci[b] for b, _, _, _ in elenco}
+        trovati, prima = _dijkstra_con_percorso(grafo, agganci[a], obiettivi)
+        for b, kmh, n, km_tratta in elenco:
             percorso = _risali(prima, agganci[a], agganci[b])
             if len(percorso) < 2:
+                senza_percorso.append((a, b, n))
                 continue
+            # Il colore viene dalla velocita', che e' calcolata sui chilometri
+            # di km_tratte (in maggioranza RINF); la geometria viene dal cammino
+            # minimo su OpenStreetMap. Quando le due fonti non descrivono lo
+            # stesso viaggio, dipingere quel cammino significa attribuire una
+            # velocita' a binari che quel treno non percorre. Meglio non
+            # disegnare la tratta che disegnarla sul percorso sbagliato.
+            km_disegnati = trovati.get(agganci[b])
+            if km_tratta > 0 and km_disegnati:
+                scarto = abs(km_disegnati - km_tratta) / km_tratta
+                if scarto > MAX_SCARTO_PERCORSO:
+                    incoerenti.append((a, b, km_tratta, km_disegnati, n))
+                    continue
             disegnate += 1
             for x, y in zip(percorso, percorso[1:]):
                 k = (x, y) if x < y else (y, x)
@@ -210,6 +242,25 @@ def main() -> None:
             print(f"  {i}/{len(per_partenza)} partenze, {disegnate:,} percorsi tracciati")
 
     print(f"\npercorsi tracciati: {disegnate:,}")
+
+    # Cio' che non entra in mappa si dice, non si salta in silenzio: prima il
+    # totale finale sembrava coprire tutte le tratte della classifica.
+    if senza_percorso:
+        tot = sum(n for _, _, n in senza_percorso)
+        print(f"tratte senza percorso sul grafo: {len(senza_percorso)} ({tot:,.0f} corse)")
+        for a, b, n in sorted(senza_percorso, key=lambda x: -x[2])[:5]:
+            print(f"    {a} - {b} ({n:,.0f} corse)")
+    if incoerenti:
+        tot = sum(x[4] for x in incoerenti)
+        print(f"tratte escluse perche' il percorso OSM non concorda con i km usati: "
+              f"{len(incoerenti)} ({tot:,.0f} corse)")
+        for a, b, km, kmo, n in sorted(incoerenti, key=lambda x: -x[4])[:5]:
+            print(f"    {a} - {b}: {km:.0f} km usati contro {kmo:.0f} km disegnati ({n:,.0f} corse)")
+    if fuori_grafo:
+        tot = sum(n for _, _, n in fuori_grafo)
+        print(f"tratte con una stazione non agganciata al grafo: {len(fuori_grafo)} ({tot:,.0f} corse)")
+        for a, b, n in sorted(fuori_grafo, key=lambda x: -x[2])[:5]:
+            print(f"    {a} - {b} ({n:,.0f} corse)")
     print(f"tratti di binario percorsi: {len(corse):,}")
 
     velocita = {k: peso[k] / corse[k] for k in corse if corse[k] >= MIN_CORSE_TRATTO}
@@ -218,7 +269,12 @@ def main() -> None:
     # Si spezza per classe di velocita' prima di unire le catene: un tratto
     # veloce e uno lento non possono finire nella stessa polilinea, avrebbero un
     # colore solo.
+    # Si classifica sul valore ARROTONDATO, che e' quello che il browser legge
+    # dal GeoJSON: classificando sul valore pieno, una media di 59,96 finiva in
+    # una classe qui e nell'altra nel browser, con la legenda che la contava
+    # dalla parte sbagliata.
     def classe(v: float) -> int:
+        v = round(v, 1)
         for i, soglia in enumerate((40, 60, 80, 100, 130)):
             if v < soglia:
                 return i
@@ -244,9 +300,15 @@ def main() -> None:
             if not vals:
                 continue
             media = sum(v * p for v, p in zip(vals, pesi)) / sum(pesi)
+            # Il valore pubblicato deve ricadere nella classe in cui la
+            # polilinea e' stata raggruppata: una media di 59,96 arrotondata a
+            # 60,0 verrebbe colorata dal browser come la classe successiva.
+            kmh = round(media, 1)
+            if classe(kmh) != c:
+                kmh = math.floor(media * 10) / 10
             elementi.append({
                 "type": "Feature",
-                "properties": {"kmh": round(media, 1),
+                "properties": {"kmh": kmh,
                                "corse": int(round(sum(pesi) / len(pesi)))},
                 "geometry": {"type": "LineString",
                              "coordinates": [[round(lon, 4), round(lat, 4)]

@@ -262,15 +262,25 @@ def safe_int(x: Any) -> Optional[int]:
 
 
 def parse_dt_it(x: Any) -> Optional[pd.Timestamp]:
+    """Versione a cella singola, tenuta per i richiami esterni e i test.
+
+    Applica lo stesso orizzonte di `parse_dt_it_series`: senza, questa strada
+    resterebbe l'unica per cui l'anno 0 o l'anno 52000 del feed entrano nel
+    silver e lo rendono irrileggibile, e la protezione dipenderebbe da quale
+    delle due funzioni chiama chi passa di qui.
+    """
     if x is None:
         return None
     s = str(x).strip()
     if s == "":
         return None
     try:
-        return pd.to_datetime(s, dayfirst=True, errors="raise")
+        t = pd.to_datetime(s, dayfirst=True, errors="raise")
     except Exception:
         return None
+    if pd.isna(t) or t < _ORIZZONTE_MIN or t >= _ORIZZONTE_MAX:
+        return None
+    return t
 
 
 _NULLISH = {"", "nan", "none", "null", "nat", "<na>"}
@@ -303,6 +313,25 @@ def parse_dt_it_series(values: pd.Series) -> pd.Series:
     if retry.any():
         out.loc[retry] = pd.to_datetime(s[retry], dayfirst=True, errors="coerce")
 
+    return entro_orizzonte(out)
+
+
+# Nessun orario ferroviario di questa sorgente puo' cadere fuori da questa
+# finestra. Serve perche' il parser tollerante accetta qualunque cosa somigli a
+# una data: nel bronze compaiono l'anno 0, l'anno 1 e l'anno 52000, che non sono
+# orari ma spazzatura del feed. Non erano solo inutili. Una volta scritti nel
+# silver rendevano quel mese impossibile da rileggere: la conversione a
+# nanosecondi va in overflow e faceva morire l'intera trasformazione, quindi il
+# silver non era piu' ricostruibile dal bronze.
+_ORIZZONTE_MIN = pd.Timestamp("2000-01-01")
+_ORIZZONTE_MAX = pd.Timestamp("2100-01-01")
+
+
+def entro_orizzonte(out: pd.Series) -> pd.Series:
+    """Porta a NaT le date fuori da ogni orizzonte plausibile."""
+    fuori = out.notna() & ((out < _ORIZZONTE_MIN) | (out >= _ORIZZONTE_MAX))
+    if fuori.any():
+        out = out.mask(fuori)
     return out
 
 
@@ -443,3 +472,87 @@ def bucketize_delay(minutes: Optional[int], edges: List[int], labels: List[str])
         if minutes > lo and minutes <= hi:
             return labels[i]
     return "missing"
+
+
+STATIONS_DIM = os.path.join("data", "gold", "stations_dim.csv")
+
+
+def _compatibile_per_token(corto: str, lungo: str) -> bool:
+    """Vero se `corto` e' la forma abbreviata di `lungo`, token per token.
+
+    "TREVISO C" e' compatibile con "TREVISO CENTRALE", "CHIUSI C T" con
+    "CHIUSI CHIANCIANO TERME", "MINTURNO" con "MINTURNO SCAURI". Non lo sono
+    "CECCHINA" e "ALBANO LAZIALE", che sono due paesi diversi finiti sulle
+    stesse coordinate per un errore della sorgente.
+    """
+    tc = corto.split()
+    tl = lungo.split()
+    if not tc or len(tc) > len(tl):
+        return False
+    return all(tl[i].startswith(tc[i]) for i in range(len(tc)))
+
+
+def alias_stazioni_da_coordinate(percorso: str = STATIONS_DIM) -> Dict[str, str]:
+    """Nomi diversi che sono la stessa stazione, riconosciuti dalle coordinate.
+
+    L'anagrafica contiene la stessa fermata sotto due grafie, una estesa e una
+    con le iniziali puntate: "TREVISO CENTRALE" e "TREVISO C", con latitudine e
+    longitudine identiche fino alla quinta cifra. Il normalizzatore non poteva
+    unificarle, perche' espandere una singola lettera e' ambiguo (la C di
+    Centrale, la T di Terme, la M di Militello), e le due grafie restavano due
+    tratte distinte: Portogruaro-Treviso compariva due volte, una con i 52 km
+    ufficiali del RINF e una con 127 km stimati da OpenStreetMap, e quest'ultima
+    risultava la quindicesima tratta piu' veloce d'Italia a 128 km/h.
+
+    Qui l'ambiguita' la scioglie il dato: si fondono solo i nomi che stanno
+    sulle stesse coordinate E sono compatibili token per token. Le coordinate da
+    sole non bastano, perche' l'anagrafica ha anche coppie di stazioni davvero
+    diverse alla stessa posizione.
+
+    Nemmeno le due condizioni insieme bastano, e la terza e' il codice. Nella
+    dimensione stazioni LECCO e LECCO MAGGIANICO portano la stessa identica
+    coordinata, che e' quella di Maggianico: un errore dell'anagrafica su due
+    fermate distanti tre chilometri. Sono compatibili token per token, quindi le
+    prime due regole le fondevano, e le 110.022 corse di Lecco finivano sotto il
+    nome di una fermata che ne fa 45, con i chilometri di un'altra stazione.
+    Quando entrambe le grafie hanno un codice vero della sorgente, e' la
+    sorgente stessa a dire che sono due stazioni: nessuna coordinata puo'
+    smentirla. I codici sintetici `N_`, che derivano dal nome e non dal feed,
+    non contano come prova.
+    """
+    if not os.path.exists(percorso):
+        return {}
+    d = pd.read_csv(percorso)
+    if not {"nome_stazione", "lat", "lon"} <= set(d.columns):
+        return {}
+    d = d.dropna(subset=["lat", "lon"])
+
+    per_posizione: Dict[Tuple[float, float], set] = {}
+    codici_veri: Dict[str, set] = {}
+    ha_codice = "cod_stazione" in d.columns
+    for i, (nome, lat, lon) in enumerate(zip(d["nome_stazione"], d["lat"], d["lon"])):
+        k = normalize_station_name(str(nome))
+        if not k:
+            continue
+        per_posizione.setdefault((round(float(lat), 5), round(float(lon), 5)), set()).add(k)
+        if ha_codice:
+            cod = str(d["cod_stazione"].iloc[i]).strip()
+            if cod and not cod.startswith("N_"):
+                codici_veri.setdefault(k, set()).add(cod)
+
+    alias: Dict[str, str] = {}
+    for nomi in per_posizione.values():
+        if len(nomi) < 2:
+            continue
+        # Il nome canonico e' il piu' esteso: e' quello che il RINF usa e quello
+        # sotto cui si trovano le distanze ufficiali.
+        canonico = max(sorted(nomi), key=len)
+        for n in nomi:
+            if n == canonico or not _compatibile_per_token(n, canonico):
+                continue
+            propri = codici_veri.get(n, set())
+            altrui = codici_veri.get(canonico, set())
+            if propri and altrui and propri != altrui:
+                continue
+            alias[n] = canonico
+    return alias

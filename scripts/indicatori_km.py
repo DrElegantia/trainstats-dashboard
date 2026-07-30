@@ -34,7 +34,7 @@ from typing import Dict, Tuple
 
 import pandas as pd
 
-from .utils import normalize_station_name
+from .utils import alias_stazioni_da_coordinate, normalize_station_name
 
 KM = os.path.join("data", "stations", "km_tratte.csv")
 PARTI = os.path.join("data", "gold", "parts", "od_mese_categoria", "*.parquet")
@@ -49,7 +49,7 @@ MIN_KM = 30.0
 MIN_CORSE = 300
 
 
-def _stazioni_siciliane() -> set:
+def _stazioni_siciliane(alias: Dict[str, str] = None) -> set:
     """I nomi delle stazioni che stanno sulla rete siciliana.
 
     Non si ricavano dalla geografia: allo Stretto Messina e Reggio Calabria
@@ -60,6 +60,12 @@ def _stazioni_siciliane() -> set:
     """
     import json
     from collections import deque
+    alias = alias or {}
+
+    def _canon(x: str) -> str:
+        k = normalize_station_name(x)
+        return alias.get(k, k)
+
     percorso = os.path.join("data", "stations", "rinf_sezioni.json")
     if not os.path.exists(percorso):
         return set()
@@ -73,8 +79,8 @@ def _stazioni_siciliane() -> set:
             continue
         vicini.setdefault(a, []).append(b)
         vicini.setdefault(b, []).append(a)
-        nomi[a] = normalize_station_name(s["a"])
-        nomi[b] = normalize_station_name(s["b"])
+        nomi[a] = _canon(s["a"])
+        nomi[b] = _canon(s["b"])
     inizio = next((i for i, n in nomi.items() if n == "MESSINA CENTRALE"), None)
     if inizio is None:
         return set()
@@ -100,7 +106,7 @@ def _stazioni_siciliane() -> set:
     if os.path.exists(dim):
         d = pd.read_csv(dim)
         for nome, lat, lon in zip(d["nome_stazione"], d["lat"], d["lon"]):
-            k = normalize_station_name(str(nome))
+            k = _canon(str(nome))
             if not k or k in isola or k in continente:
                 continue
             if pd.isna(lat) or pd.isna(lon):
@@ -112,25 +118,67 @@ def _stazioni_siciliane() -> set:
     return isola
 
 
-def _km_per_tratta() -> Dict[Tuple[str, str], Tuple[float, str]]:
-    fuori: Dict[Tuple[str, str], Tuple[float, str]] = {}
+# Quanto ci si fida di una distanza, dalla piu' alla meno affidabile. Serve a
+# scegliere quando due grafie della stessa stazione portano due misure diverse
+# della stessa tratta: prima si prendeva quella che capitava per prima.
+_ORDINE_QUALITA = {"ufficiale": 0, "confermata": 1, "misurata": 2, "stimata": 3}
+
+# Due misure della stessa qualita' per la stessa coppia possono discordare di
+# poco, per arrotondamenti o per un binario di stazione diverso. Oltre questo
+# scarto non e' piu' imprecisione: una delle due descrive un'altra tratta.
+MAX_DISACCORDO = 0.20
+
+
+def _km_per_tratta(alias: Dict[str, str] = None) -> Dict[Tuple[str, str], Tuple[float, str]]:
+    """Chilometri per coppia di stazioni, con la fonte da cui vengono.
+
+    Una coppia puo' presentarsi piu' volte: nelle due direzioni, sotto due
+    grafie fuse dagli alias, o da fonti diverse. Vince la qualita' migliore, e
+    a parita' di qualita' vince il valore piu' basso, ma solo se le misure
+    concordano: ALCAMO DIR - CASTELVETRANO compare a 12 km e a 122 km, sempre
+    come "stimata", e prima si teneva quella che capitava prima nel file.
+    Nessuna delle otto coppie in conflitto supera oggi i filtri di `tabella`,
+    ma una distanza sbagliata diventa una velocita' sbagliata il giorno in cui
+    una di quelle tratte arriva a trecento corse.
+    """
+    alias = alias or {}
+    proposte: Dict[Tuple[str, str], Dict[str, set]] = {}
+
     with open(KM, encoding="utf-8") as f:
         for r in csv.DictReader(f):
             if not r["km"]:
                 continue
             if r["qualita"] == "sospetta":
                 continue
-            v = (float(r["km"]), r["qualita"])
-            a, b = r["partenza"], r["arrivo"]
-            fuori[(a, b)] = v
-            fuori.setdefault((b, a), v)
+            a = alias.get(r["partenza"], r["partenza"])
+            b = alias.get(r["arrivo"], r["arrivo"])
+            if a == b:
+                continue
+            km = float(r["km"])
+            for k in ((a, b), (b, a)):
+                proposte.setdefault(k, {}).setdefault(r["qualita"], set()).add(km)
+
+    fuori: Dict[Tuple[str, str], Tuple[float, str]] = {}
+    discordi = set()
+    for k, per_qualita in proposte.items():
+        qualita = min(per_qualita, key=lambda q: _ORDINE_QUALITA.get(q, 9))
+        valori = sorted(per_qualita[qualita])
+        if valori[0] > 0 and (valori[-1] - valori[0]) > MAX_DISACCORDO * valori[0]:
+            discordi.add(tuple(sorted(k)))
+            continue
+        fuori[k] = (valori[0], qualita)
+
+    if discordi:
+        print(f"  {len(discordi)} tratte senza chilometri: due misure della stessa "
+              f"qualita' discordano di piu' del {int(MAX_DISACCORDO * 100)}%")
     return fuori
 
 
 def tabella(min_corse: int = MIN_CORSE, min_km: float = MIN_KM) -> pd.DataFrame:
-    km = _km_per_tratta()
+    alias = alias_stazioni_da_coordinate()
+    km = _km_per_tratta(alias)
 
-    colonne = ["cod_partenza", "cod_arrivo", "nome_partenza", "nome_arrivo",
+    colonne = ["mese", "cod_partenza", "cod_arrivo", "nome_partenza", "nome_arrivo",
                "corse_osservate", "corse_con_misura", "corse_con_durata",
                "durata_prog_tot", "minuti_ritardo_tot", "in_ritardo"]
     pezzi = []
@@ -139,9 +187,15 @@ def tabella(min_corse: int = MIN_CORSE, min_km: float = MIN_KM) -> pd.DataFrame:
     d = pd.concat(pezzi, ignore_index=True)
 
     # I nomi sono la chiave verso i chilometri: i codici stazione cambiano nel
-    # tempo, i nomi normalizzati no.
+    # tempo, i nomi normalizzati no. Sopra la normalizzazione sta la fusione
+    # delle grafie abbreviate riconosciute dalle coordinate: senza, "TREVISO C"
+    # e "TREVISO CENTRALE" restano due stazioni, la prima non trova il RINF e
+    # ripiega su una stima di OpenStreetMap lunga il doppio del vero.
     nomi = pd.unique(pd.concat([d["nome_partenza"], d["nome_arrivo"]]).dropna())
-    norm = {n: normalize_station_name(str(n)) for n in nomi}
+    norm = {}
+    for n in nomi:
+        k = normalize_station_name(str(n))
+        norm[n] = alias.get(k, k)
     d["a"] = d["nome_partenza"].map(norm)
     d["b"] = d["nome_arrivo"].map(norm)
     d = d[d["a"].notna() & d["b"].notna() & (d["a"] != d["b"])]
@@ -153,6 +207,16 @@ def tabella(min_corse: int = MIN_CORSE, min_km: float = MIN_KM) -> pd.DataFrame:
         durata_tot=("durata_prog_tot", "sum"),
         ritardo_tot=("minuti_ritardo_tot", "sum"),
         in_ritardo=("in_ritardo", "sum"),
+        # Su quanti mesi poggia la media, e fra quali estremi. Senza, la
+        # classifica mette sulla stessa scala tratte osservate per sei anni e
+        # tratte esistite un mese solo: Chiusi Chianciano Terme - Perugia
+        # compare con 1.198 corse tutte di maggio 2025, e una tratta che vive
+        # solo durante una deviazione per lavori ha per costruzione tempi
+        # peggiori, quindi sale in cima proprio perche' e' un caso eccezionale.
+        # Sono 226 tratte su 1.168 sotto i due anni, 66 sotto l'anno.
+        mesi=("mese", "nunique"),
+        primo_mese=("mese", "min"),
+        ultimo_mese=("mese", "max"),
     )
 
     # La tratta A->B e B->A sono lo stesso pezzo di rete: si sommano, altrimenti
@@ -162,7 +226,8 @@ def tabella(min_corse: int = MIN_CORSE, min_km: float = MIN_KM) -> pd.DataFrame:
     g = g.groupby(["k1", "k2"], as_index=False).agg(
         corse=("corse", "sum"), con_misura=("con_misura", "sum"),
         con_durata=("con_durata", "sum"), durata_tot=("durata_tot", "sum"),
-        ritardo_tot=("ritardo_tot", "sum"), in_ritardo=("in_ritardo", "sum"))
+        ritardo_tot=("ritardo_tot", "sum"), in_ritardo=("in_ritardo", "sum"),
+        mesi=("mesi", "max"), primo_mese=("primo_mese", "min"), ultimo_mese=("ultimo_mese", "max"))
     g = g.rename(columns={"k1": "partenza", "k2": "arrivo"})
 
     coppie = list(zip(g["partenza"], g["arrivo"]))
@@ -181,7 +246,7 @@ def tabella(min_corse: int = MIN_CORSE, min_km: float = MIN_KM) -> pd.DataFrame:
     # Una tratta attraversa lo Stretto se ha un capo sulla rete siciliana e
     # l'altro no. Serve segnarlo qui perche' e' l'unico posto dove si sa: nel
     # browser il grafo della rete non c'e'.
-    sic = _stazioni_siciliane()
+    sic = _stazioni_siciliane(alias)
     g["attraversa_stretto"] = ((g["partenza"].isin(sic) != g["arrivo"].isin(sic))
                                & (g["partenza"].isin(sic) | g["arrivo"].isin(sic)))
 

@@ -1017,7 +1017,10 @@ adiacenti della stessa classe e semplificando la geometria a 110 metri.
 la media pesata delle velocita' commerciali dei treni che percorrono quel
 tratto. Dove passano molti regionali il tratto risulta lento anche se
 l'infrastruttura non lo e', perche' sono loro a fare il numero delle corse:
-Milano-Piacenza risulta a 54 km/h per questo motivo. E la sorgente da' i tempi
+Milano-Piacenza risulta a 53 km/h per questo motivo. Il numero non e' piu'
+scritto nel testo: lo calcola la dashboard sulla tabella dei chilometri, perche'
+battuto a mano diceva 54, che era il valore della sola Lambrate, ottocentottanta
+corse su novantanovemila. E la sorgente da' i tempi
 solo ai capolinea, non alle fermate intermedie, quindi la velocita' di un
 viaggio si spalma uguale su tutto il percorso. Entrambe le avvertenze sono
 scritte sotto la mappa, non solo qui: una mappa che promette "dove la rete e'
@@ -1032,3 +1035,55 @@ metriche precedenti non avevano. Milano Rogoredo-Palazzolo risultava 765 km in
 sbagliato (vedi 3.12.1). Il controllo e' rimasto dentro `indicatori_km` come
 rete di sicurezza permanente, con la soglia a 200 km/h di media programmata:
 oggi la piu' alta e' Firenze-Milano a 158,7 e nessuna tratta la supera.
+
+---
+
+## 10. Il ritardo misurato al capolinea e' piu' basso di quello vero
+
+La sorgente, nel formato che alimenta la dashboard, pubblica una corsa con il
+suo ritardo all'origine e alla destinazione. Il payload vecchio pero' porta
+anche tutte le fermate intermedie, ciascuna con il proprio ritardo in arrivo e
+in partenza, e confrontare le due misure sulle stesse corse dice una cosa che
+cambia la lettura del servizio.
+
+**Sullo stesso insieme di corse, giugno 2024 e giugno 2025:**
+
+| Dove si misura | In ritardo oltre 4 minuti | Fermate |
+|---|---|---|
+| Fermate intermedie | **23,5%** | 3.685.500 |
+| Capolinea di arrivo | **17,5%** | 455.387 |
+
+Il treno arriva tardi dove i passeggeri scendono e recupera prima del capolinea.
+Non e' un paradosso: il margine di recupero sta in coda all'orario, ed e' li'
+per assorbire i ritardi. Misurare solo al capolinea significa misurare l'unico
+punto del percorso costruito apposta perche' il ritardo non si veda.
+
+**Sull'intero anno, la distanza fra le due misure e' sistematica e cresce:**
+
+| Anno | Ai capolinea | A tutte le fermate | Divario |
+|---|---|---|---|
+| 2020 | 14,5% | 17,1% | +2,5 |
+| 2021 | 13,7% | 17,4% | +3,6 |
+| 2022 | 14,6% | 19,2% | +4,6 |
+| 2023 | 15,8% | 20,8% | +4,9 |
+| 2024 | 18,3% | 23,7% | +5,4 |
+| 2025 | 16,9% | 22,4% | +5,4 |
+| 2026 | 16,4% | 21,6% | +5,2 |
+
+Il divario e' raddoppiato dal 2020 al 2024: non solo il livello pubblicato e'
+piu' basso del vero, ma lo e' sempre di piu', quindi anche l'andamento nel tempo
+risulta appiattito.
+
+La stessa cosa si vede sul singolo movimento. Alla partenza dall'origine
+l'anticipo praticamente non esiste, 0,02% su 18,3 milioni di corse, perche' un
+treno non parte prima dell'orario. All'arrivo al capolinea gli anticipi sono il
+40,5%. Alle fermate intermedie stanno in mezzo, al 23,4%, e nel 66% dei casi il
+treno riparte da una fermata con piu' ritardo di quanto ne avesse arrivando.
+
+**Cosa se ne fa la dashboard.** Niente, per ora, e la ragione e' che il ramo
+delle fermate si ferma al 26 luglio 2026: la sorgente ha smesso di pubblicare il
+payload completo, quindi una metrica costruita li' non si aggiornerebbe piu'.
+Sostituire il numero pubblicato con uno piu' corretto ma fermo sarebbe peggio.
+Resta pero' il metro con cui leggere quello che la dashboard mostra: la
+percentuale in ritardo e' una misura al capolinea, e sottostima di circa cinque
+punti quella che un passeggero incontra alla propria fermata.

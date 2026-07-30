@@ -17,6 +17,13 @@ on:
       # veda mai.
       - "stations/**"
       - "scripts/**"
+      # config/pipeline.yml decide come vengono classificate le corse, quali
+      # misure di ritardo sono valide e dove cadono le classi dell'istogramma:
+      # cambiarlo cambia ogni numero pubblicato, e senza questo percorso il sito
+      # restava fermo alla versione precedente.
+      - "config/**"
+      # Una modifica al workflow stesso deve poter essere provata subito.
+      - ".github/workflows/deploy-site.yml"
 
   workflow_dispatch:
 

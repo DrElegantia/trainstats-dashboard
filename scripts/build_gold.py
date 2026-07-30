@@ -164,10 +164,16 @@ def _apply_code_map(df: pd.DataFrame, code_map: Dict[str, str]) -> pd.DataFrame:
 # e' l'assenza della corsa.
 ETICHETTA_NON_EFFETTUATE = "non effettuate"
 
+# Classe dell'istogramma per le corse partite ma interrotte o limitate. Sono
+# partite, quindi non stanno con le non effettuate; non sono arrivate dove
+# dovevano, quindi il loro scostamento non e' confrontabile con quello di chi e'
+# arrivato a destinazione.
+ETICHETTA_PARZIALI = "parzialmente cancellate"
+
 _SUM_COLS = frozenset([
     "corse_osservate", "corse_con_misura", "effettuate", "cancellate", "soppresse",
     "parzialmente_cancellate", "cancellate_tot", "non_effettuate", "info_mancante",
-    "in_orario", "in_ritardo", "in_anticipo", "puntuali",
+    "in_orario", "in_ritardo", "in_ritardo_effettuate", "in_anticipo", "puntuali",
     "oltre_5", "oltre_10", "oltre_15", "oltre_30", "oltre_60",
     "minuti_ritardo_tot", "minuti_anticipo_tot", "minuti_netti_tot",
     "durata_prog_tot", "corse_con_durata",
@@ -457,7 +463,15 @@ def build_metrics(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     df["orario_arrivo_sospetto"] = 0
     if sys_thr is not None and {"numero_treno", "cod_partenza", "cod_arrivo"} <= set(df.columns):
         key = ["numero_treno", "cod_partenza", "cod_arrivo"]
-        dev_for_ref = df["ritardo_arrivo_min"].where(valid)
+        # La mediana di riferimento va calcolata PRIMA della finestra di
+        # validita', non dopo. Con min_minutes a -5 la finestra scarta gia' ogni
+        # valore piu' basso, quindi una mediana calcolata sui soli superstiti non
+        # puo' scendere a -10 e il filtro non poteva scattare per costruzione:
+        # zero corse marcate su 18,7 milioni, mentre il caso che l'ha motivato
+        # (treno 4329 Foggia-Bari, venti minuti di anticipo ogni giorno) esiste.
+        # Qui si applica il solo limite superiore, che serve a tenere fuori i
+        # valori impossibili senza nascondere proprio cio' che si cerca.
+        dev_for_ref = df["ritardo_arrivo_min"].where(ran & df["ritardo_arrivo_min"].le(hi))
         grp = dev_for_ref.groupby([df[c] for c in key])
         med = grp.transform("median")
         runs = grp.transform("count")
@@ -485,6 +499,22 @@ def build_metrics(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     df["arrivo_in_orario"] = (valid & (dev >= 0) & (dev <= thr)).astype("int8")
     df["arrivo_in_ritardo"] = (valid & (dev > thr)).astype("int8")
     df["arrivo_in_anticipo"] = (valid & (dev < 0)).astype("int8")
+
+    # Lo stesso ritardo, contato solo dove la corsa e' stata fatta per intero.
+    #
+    # L'indice della dashboard somma le corse in ritardo a quelle mancate. Una
+    # parzialmente cancellata arrivata tardi sta in tutt'e due gli addendi
+    # (`delay_states` la ammette fra le misurabili e `cancellate_tot` la
+    # comprende), quindi veniva contata due volte: 0,73 punti percentuali sullo
+    # storico, e in crescita da 0,60 nel 2023 a 0,84 nel 2026, perche' le
+    # cancellazioni parziali aumentano. Un errore che sporca l'andamento, non
+    # solo il livello. Con questa colonna i tre insiemi (effettuate in ritardo,
+    # parzialmente cancellate, non partite) sono disgiunti e la somma e' esatta.
+    # `in_ritardo` resta com'e', perche' e' il numeratore giusto per la
+    # percentuale sulle corse misurate.
+    df["arrivo_in_ritardo_effettuate"] = (
+        valid & (dev > thr) & df["is_effettuato"].astype(bool)
+    ).astype("int8")
 
     # Punctuality in the regulatory sense: arriving early counts as on time.
     # The three buckets above stay mutually exclusive for the histogram, so
@@ -523,7 +553,25 @@ def build_metrics(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     # finite. Ora hanno una classe propria, che la dashboard disegna come ultima
     # barra: una corsa cancellata e' il caso peggiore, non un dato assente.
     non_effettuata = (df["is_cancellato"].astype(bool) | df["is_soppresso"].astype(bool))
-    df["bucket_ritardo_arrivo"] = bucket.mask(non_effettuata, ETICHETTA_NON_EFFETTUATE)
+
+    # Stessa ragione, un gradino piu' in la'. Le parzialmente cancellate erano
+    # rimaste nelle barre normali: 207.778 su 211.036, il 98,5%, disegnate come
+    # corse qualunque, e 52.485 di queste addirittura fra gli arrivi in anticipo,
+    # perche' un treno limitato a meta' percorso "arriva prima". In testa alla
+    # pagina il contatore diceva 404.343 cancellati fra totali e parziali,
+    # l'ultima barra ne mostrava 193.307, e i 211.036 di differenza erano
+    # spalmati fra le barre di chi era arrivato a destinazione. La classe propria
+    # rimette d'accordo i due numeri e toglie dalla distribuzione corse che a
+    # destinazione non sono mai arrivate.
+    #
+    # Le statistiche di ritardo restano come sono (`delay_states` in
+    # pipeline.yml): li' una parziale continua a portare la sua misura, che e'
+    # una scelta discutibile ma diversa da questa, e cambiarla muoverebbe ogni
+    # percentuale di puntualita' pubblicata.
+    parziale = df["is_parz_cancellato"].astype(bool) & ~non_effettuata
+    df["bucket_ritardo_arrivo"] = (
+        bucket.mask(parziale, ETICHETTA_PARZIALI).mask(non_effettuata, ETICHETTA_NON_EFFETTUATE)
+    )
 
     return df
 
@@ -545,6 +593,7 @@ def agg_core(group_cols: List[str], df: pd.DataFrame) -> pd.DataFrame:
         info_mancante=("info_mancante_int", "sum"),
         in_orario=("arrivo_in_orario", "sum"),
         in_ritardo=("arrivo_in_ritardo", "sum"),
+        in_ritardo_effettuate=("arrivo_in_ritardo_effettuate", "sum"),
         in_anticipo=("arrivo_in_anticipo", "sum"),
         puntuali=("arrivo_puntuale", "sum"),
         oltre_5=("oltre_5", "sum"),
@@ -710,17 +759,23 @@ def build_gold(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, pd.DataFrame]
     m_group = ["mese", "categoria", "cod_stazione"]
     det_group = ["mese", "tipo_giorno", "fascia_oraria", "categoria", "cod_stazione"]
 
-    staz_m_ruolo = agg_core(m_group + ["ruolo"], hist_station_src)
+    # L'indice ritardo si calcola solo sulle serie temporali (kpi_* e od_*),
+    # mai su queste, che sono le tabelle piu' pesanti del pacchetto: qui la
+    # colonna disgiunta sarebbe solo peso da scaricare.
+    def _senza_ritardo_effettuate(d: pd.DataFrame) -> pd.DataFrame:
+        return d.drop(columns=["in_ritardo_effettuate"], errors="ignore")
+
+    staz_m_ruolo = _senza_ritardo_effettuate(agg_core(m_group + ["ruolo"], hist_station_src))
     out["stazioni_mese_categoria_ruolo"] = _attach_station_names(staz_m_ruolo, hist_station_src)
 
-    staz_m_nodo = agg_core(m_group, hist_station_src)
+    staz_m_nodo = _senza_ritardo_effettuate(agg_core(m_group, hist_station_src))
     staz_m_nodo["ruolo"] = "nodo"
     out["stazioni_mese_categoria_nodo"] = _attach_station_names(staz_m_nodo, hist_station_src)
 
-    staz_det_ruolo = agg_core(det_group + ["ruolo"], hist_station_src)
+    staz_det_ruolo = _senza_ritardo_effettuate(agg_core(det_group + ["ruolo"], hist_station_src))
     out["stazioni_dettaglio_categoria_ruolo"] = _attach_station_names(staz_det_ruolo, hist_station_src)
 
-    staz_det_nodo = agg_core(det_group, hist_station_src)
+    staz_det_nodo = _senza_ritardo_effettuate(agg_core(det_group, hist_station_src))
     staz_det_nodo["ruolo"] = "nodo"
     out["stazioni_dettaglio_categoria_nodo"] = _attach_station_names(staz_det_nodo, hist_station_src)
 

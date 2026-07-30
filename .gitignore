@@ -26,6 +26,11 @@ data/bronze/**/*.csv
 !data/bronze/**/*.csv.gz
 !data/bronze/**/*.json
 
+# Lo scarico grezzo di ingest_raw, prima che ingest lo comprima e lo archivi
+# sotto data/bronze/AAAA/MM/. E' un intermedio: gli stessi byte esistono gia'
+# nel bronze definitivo, e la cartella si riempie a ogni ingestione manuale.
+data/bronze/raw/
+
 # Heavy gold daily files (150–250 MB each) are never committed to git.
 # They exceed GitHub LFS free bandwidth (1 GB/month) when downloaded on every
 # CI run. They are rebuilt from silver in CI and uploaded directly to Pages.
@@ -47,6 +52,12 @@ docs/data/manifest.json
 # Stessa ragione per la geometria della rete: l'originale sta in
 # data/stations/, build_site ne fa una copia qui.
 docs/data/*.geojson
+# E per le tratte per fermata. Le regole sopra usano `*`, che si ferma al primo
+# livello: senza queste due righe i 2.625 CSV di docs/data/tratte/ non sarebbero
+# ignorati, e un `git add -A` porterebbe 241 MB di artefatto dentro la storia di
+# un repo che per scelta non versiona nulla di docs/data.
+docs/data/tratte/
+docs/data/tratte_indice.json
 
 !.gitkeep
 
@@ -55,3 +66,7 @@ docs/data/*.geojson
 # risposta Overpass. Gli esiti (distanze_*.csv, km_tratte.csv) sono versionati.
 data/gtfs/
 data/stations/osm_binari.json
+
+# Le fermate estratte dal payload legacy: rigenerabili dal bronze, otto volte
+# il volume del silver per corsa.
+data/silver_fermate/

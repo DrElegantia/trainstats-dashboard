@@ -23,6 +23,66 @@ La dashboard (`docs/`) carica solo i CSV, senza rielaborare lo storico nel
 browser, e per le tabelle piu' pesanti preferisce lo shard dell'anno
 selezionato al file di tutta la storia.
 
+### Il ramo delle fermate
+
+Accanto alla pipeline principale, che conosce di ogni corsa solo l'origine e la
+destinazione, esiste un secondo ramo che scende alle singole fermate:
+
+    python -m scripts.transform_fermate --start 2020-01-01 --end 2025-12-31
+    python -m scripts.build_gold_fermate
+
+Serve perche' contare le corse ai soli capolinea descrive male il paese. La
+sorgente vede **1.783 stazioni come fermata e 317 come capolinea**: nel giugno
+2025 Pordenone risulta con quattro corse, Abbiategrasso con nessuna, Acireale
+con tredici, mentre le fermate ne contano rispettivamente 1.786, 1.311 e 1.557.
+E' anche la ragione per cui la mappa deve tenere una riserva sulle stazioni
+sotto le trenta corse: sulle fermate, 1.778 stazioni su 2.261 superano quella
+soglia da sole.
+
+In piu' il payload segna le **fermate soppresse** (`ra = "S"`), cioe' le fermate
+che il treno salta. In un giorno campione compaiono in 202 treni, e in 93 di
+questi il campo dei provvedimenti tace: per la pipeline dei capolinea quelle
+corse sono regolari.
+
+**Copertura e limiti.** Le fermate coprono **2.377 giorni, dall'11 gennaio 2020
+al 26 luglio 2026**, con dodici giorni scoperti: dieci mancano anche al bronze
+perche' la sorgente non li ha mai pubblicati (30/03/2020, 12/04/2020,
+28/07/2020, 25-28/02/2021, 30/03/2021, 13/02/2022, 06/03/2022), uno ha il dump
+corrotto all'origine (28/06/2026, lo zip non ha la central directory e non se
+ne recupera nulla) e uno non e' mai stato distribuito (07/07/2026). Per quei due
+giorni il bronze resta quello dell'API, completo sui capolinea.
+
+Prima dell'11 gennaio 2020 il campo `fr` non esiste: i payload del 2019 e dei
+primi dieci giorni del 2020 hanno chiavi diverse e non portano le fermate.
+Nessuna delle fonti trovate le contiene, quindi per quel periodo la vista per
+fermata non e' ricostruibile.
+
+I mesi dal 2026 non arrivano dall'API, che pubblica solo i capolinea, ma dai
+dump giornalieri che l'autore di TrainStats distribuisce a parte, importati con
+`scripts.import_history --overwrite`. Attenzione a come sono organizzati: fino
+ad aprile 2026 stanno in sottocartelle mensili, da maggio sono sciolti nella
+radice della condivisione, e lo zip che Dropbox genera per l'intera cartella
+**contiene solo le sottocartelle**. Scaricando quello si perdono gli ultimi tre
+mesi senza accorgersene.
+
+Attenzione a quell'import: `transform_silver` fonde con il silver gia' presente
+e la chiave di deduplicazione nasce dai campi grezzi, che nei due formati sono
+scritti in modo diverso. Riscrivendo il bronze senza cancellare il silver dei
+mesi toccati, la stessa corsa entra due volte e i conteggi raddoppiano
+esattamente. Cancellare i parquet di quei mesi prima di rilanciare, e
+ricostruire il gold anche del mese successivo, perche' le corse a cavallo della
+mezzanotte di fine mese vengono contate li'.
+
+Il ramo resta comunque una fotografia che non si aggiorna da sola: senza nuovi
+dump non puo' seguire la dashboard giornaliera.
+E pesa circa otto volte, undici fermate e mezzo per corsa: 2,8 milioni di righe
+in un mese, 17 MB di parquet.
+
+Un mese sta in memoria tutto insieme prima di essere scritto, quindi il
+parallelismo va tenuto basso: la prima passata con sette processi ha perso
+diciassette mesi su settantacinque uscendo con codice zero. Ora il default e'
+tre e i mesi senza righe vengono elencati alla fine.
+
 ## Dataset gold
 
 | File | Descrizione |
@@ -50,12 +110,25 @@ su milioni di righe. I nomi arrivano da `station_names.csv`.
 | `corse_con_misura` | Corse con una misura di ritardo utilizzabile: **e' il denominatore corretto** per le percentuali di puntualita'. |
 | `puntuali` | Arrivi entro soglia, contando anche gli anticipi. |
 | `in_orario` / `in_anticipo` / `in_ritardo` | Tre classi mutuamente esclusive, per l'istogramma. |
+| `in_ritardo_effettuate` | Come `in_ritardo`, ma solo per le corse fatte per intero. Serve a sommare i ritardi alle mancate corse senza contare due volte una parzialmente cancellata arrivata tardi, che sta in `in_ritardo` e in `cancellate_tot`. Non e' pubblicata nelle tabelle per stazione, che non alimentano quell'indice. |
 | `non_effettuate` | Cancellate + soppresse. |
+| `cancellate_tot` | Non effettuate + parzialmente cancellate. |
 
 Un treno soppresso viene pubblicato dalla sorgente con `ritardo = 0`: viene
 escluso dalle statistiche di ritardo (`delay_states` in `config/pipeline.yml`),
 altrimenti una tratta risulterebbe tanto piu' puntuale quanto piu' viene
 cancellata. Vedi [DIAGNOSI.md](DIAGNOSI.md) per il dettaglio.
+
+Le parole della sorgente vanno lette per intero. "Percorso deviato con fermate
+soppresse" e' un treno che ha viaggiato saltando qualche fermata, non un treno
+mai partito, e "Percorso deviato con fermate straordinarie" e' un treno che ha
+fatto tutto il percorso con una fermata in piu': nessuno dei due e' una
+cancellazione, e trattarli come tali gonfiava del 7,9% il contatore dei
+cancellati.
+
+Il manifest pubblica anche `pct_misure_scartate`, la quota di corse partite la
+cui misura di arrivo non e' utilizzabile. La dashboard la legge da li' invece di
+tenerla scritta nell'HTML, dove invecchiava a ogni aggiornamento.
 
 ## Configurazione
 

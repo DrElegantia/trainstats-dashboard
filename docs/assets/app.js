@@ -496,6 +496,27 @@ function setTextByIds(ids, value) { const el = firstEl(ids); if (el) el.innerTex
 
 function setMeta(text) { const el = document.getElementById("metaBox"); if (el) el.innerText = text; }
 
+/**
+ * Scrive nella scheda dell'istogramma la quota di misure scartate.
+ *
+ * Il numero stava scritto a mano nell'HTML ("il 3,5% delle corse effettuate")
+ * e col crescere dei dati non tornava piu'. Ora lo calcola la build a ogni
+ * pubblicazione e qui si legge dal manifest, cosi' non puo' invecchiare di
+ * nuovo.
+ */
+function scriviQuotaScartate() {
+  const el = document.getElementById("pctMisureScartate");
+  if (!el) return;
+  const q = state.manifest && state.manifest.pct_misure_scartate;
+  if (typeof q !== "number" || !isFinite(q)) {
+    // Senza il dato si scrive una formula priva di cifre invece di lasciare un
+    // trattino: una percentuale mancante e' meno grave di una sbagliata.
+    el.textContent = "una quota minima";
+    return;
+  }
+  el.textContent = q.toLocaleString("it-IT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
+}
+
 /* ────────────────── manifest defaults ────────────────── */
 
 function safeManifestDefaults() {
@@ -519,7 +540,7 @@ function safeManifestDefaults() {
     // di config/pipeline.yml, con in coda la classe delle corse non effettuate.
     delay_bucket_labels: [
       "-5","(-5,-1]","(-1,0]","(0,1]","(1,5]","(5,10]","(10,15]","(15,30]",
-      "(30,60]","(60,120]","> 120","non effettuate"
+      "(30,60]","(60,120]","> 120","parzialmente cancellate","non effettuate"
     ]
   };
 }
@@ -533,6 +554,9 @@ const state = {
   dataBase: "data/",
   manifest: safeManifestDefaults(),
   data: {
+    // Le coppie di fermate della stazione di partenza selezionata, quando
+    // esistono: vedi ensureTratte.
+    tratta: [],
     kpiMonth: [],
     kpiMonthCat: [],
     kpiDetail: [],
@@ -791,9 +815,13 @@ function passMonthRange(r, field) {
   const to   = parseInt(state.filters.month_to || "0", 10);
   const a = from || to;
   const b = to || from;
-  const lo = Math.min(a, b);
-  const hi = Math.max(a, b);
-  return mm >= lo && mm <= hi;
+  // L'intervallo si legge da "a" a "b" nell'ordine dei mesi, e quando "b"
+  // precede "a" scavalca il capodanno. Prima si prendevano il minimo e il
+  // massimo: chiedendo ottobre-febbraio si otteneva febbraio-ottobre, cioe'
+  // esattamente i nove mesi complementari ai cinque voluti, con l'etichetta
+  // del filtro che continuava a dire "10 - 02".
+  if (a <= b) return mm >= a && mm <= b;
+  return mm >= a || mm <= b;
 }
 
 /**
@@ -1219,6 +1247,7 @@ function initFilters() {
     depSel.onchange = () => {
       state.filters.dep = depSel.value || "all"; updateDepAliases();
       refreshArrDropdown();
+      caricaTratteDiPartenza();
       scheduleFilterPipeline();
     };
   }
@@ -1230,6 +1259,11 @@ function initFilters() {
     arrSel.onchange = () => {
       state.filters.arr = arrSel.value || "all"; updateArrAliases();
       refreshDepDropdown();
+      // Idempotente: se il file della partenza e' gia' in cache non fa nulla,
+      // se stava ancora arrivando garantisce il ridisegno quando arriva. Senza,
+      // scegliendo la destinazione mentre il file era in volo restavano a
+      // schermo i numeri della vista per capolinea.
+      caricaTratteDiPartenza();
       scheduleFilterPipeline();
     };
   }
@@ -1266,8 +1300,15 @@ function initFilters() {
       state.filters.arr = "all";
       state.filters.month_from = "";
       state.filters.month_to = "";
-      state.filters.day_types = [true, true];
-      state.filters.time_slots = [true, true, true, true, true];
+      // Riempiti sul posto, non sostituiti. I bottoni di "Tipo giornata" e
+      // "Fascia oraria" tengono nella closure il riferimento all'array che
+      // avevano al momento della costruzione: riassegnandolo, le pill
+      // continuavano a modificare un array orfano che nessuno leggeva piu'.
+      // Effetto: dopo un Reset i filtri avanzati non rispondevano piu', il
+      // click non cambiava nemmeno il colore della pill, e l'unico modo per
+      // riaverli era ricaricare la pagina.
+      state.filters.day_types.fill(true);
+      state.filters.time_slots.fill(true);
       state._depAliases = null;
       state._arrAliases = null;
 
@@ -1436,9 +1477,150 @@ function applyDetailDimFilter(rows) {
   return rows;
 }
 
+/* ────────────────── tratte per fermata ────────────────── */
+
+/**
+ * Le corse che percorrono davvero una tratta, non solo quelle che ci nascono.
+ *
+ * La sorgente pubblica di ogni treno i soli capolinea, quindi la tabella
+ * origine-destinazione conosce un treno Milano-Verona solo come Milano-Verona.
+ * Chi cercava "Milano Centrale - Treviglio" trovava le nove corse al mese che
+ * finiscono a Treviglio, mentre i treni che partono da Milano Centrale e vi
+ * fermano sono 599: le altre proseguono per Verona e per Brescia. La vista
+ * descriveva un servizio che non esiste.
+ *
+ * Il ramo delle fermate permette di contare le coppie vere. La tabella intera
+ * sono quattro milioni e mezzo di righe, quindi e' divisa per stazione di
+ * partenza: si scarica il solo file della stazione scelta, un megabyte e mezzo
+ * nel caso peggiore.
+ */
+const _tratteCache = new Map();
+let _tratteIndice = null;
+
+function slugStazione(nome) {
+  return String(nome || "")
+    .normalize("NFKD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "senza-nome";
+}
+
+async function ensureTratteIndice() {
+  if (_tratteIndice) return _tratteIndice;
+  const base = ensureTrailingSlash(state.dataBase || "data/");
+  const t = await fetchTextAny([base + "tratte_indice.json", "data/tratte_indice.json"]);
+  try { _tratteIndice = t ? JSON.parse(t) : {}; } catch (e) { _tratteIndice = {}; }
+  return _tratteIndice;
+}
+
+async function ensureTratte(nomePartenza) {
+  const chiave = String(nomePartenza || "").trim();
+  if (!chiave) return [];
+  if (_tratteCache.has(chiave)) return _tratteCache.get(chiave);
+  const indice = await ensureTratteIndice();
+  const s = (indice && indice[chiave]) || slugStazione(chiave);
+  const base = ensureTrailingSlash(state.dataBase || "data/");
+  const t = await fetchTextAny([base + "tratte/" + s + ".csv", "data/tratte/" + s + ".csv"]);
+  const righe = t ? parseCSV(t) : [];
+  // Si rinominano qui, una volta sola, nei nomi che il resto della dashboard
+  // gia' conosce: cosi' KPI, istogramma e serie non devono sapere da quale
+  // delle due tabelle arrivano le righe. `fermate_soppresse` diventa il
+  // disservizio della tratta, che su una coppia di fermate e' la fermata
+  // saltata, non la corsa mai partita.
+  for (const r of righe) {
+    // Le due colonne che la build non pubblica perche' ridondanti si ricavano
+    // qui, una volta sola: oltre_5 coincide con in_ritardo (soglia a quattro
+    // minuti, valori interi) e in_orario e' il resto delle misurate. Il ritardo
+    // medio non si ricava per riga: nessuno lo legge, perche' la media va
+    // ripesata sulle corse ogni volta che si sommano piu' mesi e renderKPI la
+    // ottiene dividendo i minuti totali per le misurate dell'aggregato.
+    const mis = toNum(r.con_misura), rit = toNum(r.in_ritardo), ant = toNum(r.in_anticipo);
+    r.oltre_5 = rit;
+    r.in_orario = Math.max(0, mis - rit - ant);
+    r.corse_osservate = r.corse;
+    r.corse_con_misura = r.con_misura;
+    r.in_ritardo_effettuate = r.in_ritardo;
+    r.soppresse = r.fermate_soppresse;
+    r.cancellate_tot = r.fermate_soppresse;
+    r.non_effettuate = r.fermate_soppresse;
+    r.parzialmente_cancellate = 0;
+  }
+  _tratteCache.set(chiave, righe);
+  return righe;
+}
+
+/**
+ * Scarica le tratte della stazione di partenza scelta e ridisegna.
+ *
+ * Parte al cambio della partenza e non a quello dell'arrivo, perche' il file e'
+ * uno per stazione di partenza: quando l'utente sceglie la destinazione i dati
+ * sono gia' li'.
+ */
+function caricaTratteDiPartenza() {
+  const dep = state.filters.dep;
+  if (dep === "all") { state.data.tratta = []; return; }
+  const nome = stationName(dep, "");
+  if (!nome) { state.data.tratta = []; return; }
+  ensureTratte(nome).then((righe) => {
+    // Al ritorno la partenza puo' essere gia' cambiata: scrivere qui i dati di
+    // una stazione che non e' piu' selezionata mostrerebbe numeri di un'altra
+    // tratta, che e' l'errore che questa vista deve smettere di fare.
+    if (state.filters.dep !== dep) return;
+    state.data.tratta = righe;
+    invalidateFilterCache();
+    renderAll();
+  }).catch(() => { state.data.tratta = []; });
+}
+
+/** Vero quando la vista per tratta puo' usare le fermate invece dei capolinea. */
+function trattaPerFermate() {
+  return state.filters.dep !== "all" && state.filters.arr !== "all" &&
+         Array.isArray(state.data.tratta) && state.data.tratta.length > 0 &&
+         righeTratta().length > 0;
+}
+
+/** Le righe della tratta scelta, filtrate per arrivo, categoria, anno e mesi. */
+function righeTratta() {
+  const arrivo = stationName(state.filters.arr, "");
+  let righe = (state.data.tratta || []).filter((r) => String(r.a || "") === arrivo);
+  // La categoria e' una scomposizione esatta del totale della coppia: filtrarci
+  // sopra da' lo stesso conto che darebbe la vista per capolinea, ma sulle
+  // corse vere. Senza questa riga il menu restava selezionato su "Regionale" e
+  // il numero non si muoveva di una corsa.
+  if (state.filters.cat !== "all") {
+    righe = righe.filter((r) => String(r.categoria || "") === String(state.filters.cat));
+  }
+  if (state.filters.year !== "all") righe = righe.filter((r) => passYear(r, "mese"));
+  if (hasMonthRange()) righe = righe.filter((r) => passMonthRange(r, "mese"));
+  return righe;
+}
+
+/* I filtri che la tabella per fermata non sa onorare.
+ *
+ * Le tratte sono aggregate per mese, coppia di stazioni e categoria: il giorno
+ * della settimana e l'ora di partenza non ci sono, e ricostruirli vorrebbe dire
+ * pubblicare la tabella per giorno, che sono duecento milioni di righe.
+ *
+ * Il problema non era mancare quei tagli, era mancarli in silenzio: il menu
+ * restava acceso su "feriali, sera" e il totale continuava a mostrare tutte le
+ * 43.408 corse come se il filtro fosse applicato. Un filtro che non filtra e
+ * non lo dice e' peggio di un filtro assente, perche' chi legge crede di aver
+ * ristretto la popolazione e non l'ha fatto. */
+function filtriNonApplicabiliAllaTratta() {
+  if (!trattaPerFermate()) return [];
+  const f = [];
+  const g = state.filters.day_types || [];
+  const o = state.filters.time_slots || [];
+  if (g.some((x) => !x)) f.push("tipo di giorno");
+  if (o.some((x) => !x)) f.push("fascia oraria");
+  return f;
+}
+
 /* ────────────────── KPI ────────────────── */
 
 function _computeKpiRows() {
+  // Con entrambe le stazioni scelte e le fermate disponibili, la tratta e'
+  // quella vera: tutte le corse che la percorrono, non le sole che vi
+  // cominciano e finiscono.
+  if (trattaPerFermate()) return righeTratta();
   const stationFiltered = hasStationFilter();
   let useDetail = useDetailAggregation();
   let base;
@@ -1492,11 +1674,16 @@ function aggregateByMonth(rows) {
   for (const r of rows) {
     const m = String(r.mese || "").slice(0, 7);
     if (!m) continue;
-    if (!by.has(m)) by.set(m, { key: m, corse: 0, mis: 0, rit: 0, min: 0, sopp: 0, canc: 0 });
+    if (!by.has(m)) by.set(m, { key: m, corse: 0, mis: 0, rit: 0, ritEff: 0, min: 0, sopp: 0, canc: 0 });
     const o = by.get(m);
     o.corse += toNum(r.corse_osservate);
     o.mis   += measuredRuns(r);
     o.rit   += toNum(r.in_ritardo);
+    // I ritardi delle sole corse fatte per intero, che non si sovrappongono
+    // alle cancellate. Le pubblicazioni precedenti non hanno la colonna: li'
+    // si ripiega su in_ritardo, che e' il comportamento di prima.
+    o.ritEff += toNum(r.in_ritardo_effettuate !== undefined && r.in_ritardo_effettuate !== ""
+      ? r.in_ritardo_effettuate : r.in_ritardo);
     o.min   += toNum(r.minuti_ritardo_tot);
     o.sopp  += toNum(r.soppresse);
     const cv = r.cancellate_tot !== undefined && r.cancellate_tot !== "" ? r.cancellate_tot : r.cancellate;
@@ -1531,6 +1718,9 @@ function conMesiMancanti(out) {
 }
 
 function _computeSeriesRows() {
+  // Stessa sostituzione dei KPI: con la tratta vera la serie mensile e il
+  // Delay Index si calcolano sulle corse che la percorrono davvero.
+  if (trattaPerFermate()) return righeTratta();
   const stationFiltered = hasStationFilter();
   let useDetail = useDetailAggregation();
   let rows;
@@ -1570,7 +1760,14 @@ function seriesMonthly() {
   const out = aggregateByMonth(rows);
   return {
     x: out.map((o) => fmtMonthShort(o.key)),
-    y: out.map((o) => o.vuoto ? null : computeValue(o.corse, o.rit, o.min, o.sopp, o.canc, o.mis))
+    // Stessa riserva del Delay Index, ma solo quando la metrica e' una
+    // percentuale: su un conteggio "due corse" e' l'informazione, su una
+    // percentuale e' rumore che oscilla fra zero e cento.
+    y: out.map((o) => {
+      if (o.vuoto) return null;
+      if (getMetricMode() === "pct" && o.mis < SOGLIA_CORSE_SIGNIFICATIVE) return null;
+      return computeValue(o.corse, o.rit, o.min, o.sopp, o.canc, o.mis);
+    })
   };
 }
 
@@ -1579,9 +1776,23 @@ function seriesDelayIndex() {
   const out = aggregateByMonth(rows);
   return {
     x: out.map((o) => fmtMonthShort(o.key)),
+    // I due addendi devono descrivere insiemi disgiunti, altrimenti l'indice
+    // conta due volte la stessa corsa. Due sovrapposizioni sono state tolte:
+    // cancellate_tot contiene gia' le soppressioni (sommare o.sopp a parte
+    // contava due volte 198.053 corse, +1,06 punti), e contiene anche le
+    // parzialmente cancellate, che pero' hanno una misura di ritardo valida e
+    // finivano quindi pure in o.rit (+0,73 punti). o.ritEff conta i ritardi
+    // delle sole corse fatte per intero.
     y: out.map((o) => {
       if (o.vuoto) return null;
-      return o.corse > 0 ? ((o.rit + o.canc + o.sopp) / o.corse) * 100 : 0;
+      // Un mese con pochissime corse non ha una percentuale: ne ha una che vale
+      // 0 o 100 a seconda di come e' andata la singola corsa. Su Milano
+      // Centrale - Treviglio, 288 corse in ottantadue mesi, la linea diventava
+      // una scala di punti isolati fra zero e cento che si legge come un
+      // servizio impazzito, mentre e' solo una tratta con tre corse al mese.
+      // Sotto la soglia il punto non si disegna, come per i mesi assenti.
+      if (o.corse < SOGLIA_CORSE_SIGNIFICATIVE) return null;
+      return o.corse > 0 ? ((o.ritEff + o.canc) / o.corse) * 100 : 0;
     })
   };
 }
@@ -1612,11 +1823,143 @@ function renderSeries() {
       { displayModeBar: false, responsive: true }
     );
   }
+
+  scriviNotaMeseInCorso();
+}
+
+/**
+ * Avverte quando l'ultimo punto delle serie e' un mese non ancora finito.
+ *
+ * Il mese in corso ha solo i giorni gia' passati: sulle percentuali non cambia
+ * nulla, ma su un conteggio l'ultimo punto scende sempre, e si legge come un
+ * crollo del traffico invece che come un mese a meta'. Al momento di scrivere
+ * queste righe luglio 2026 aveva venticinque giorni su trentuno.
+ *
+ * Non serve un dato nuovo: il mese si dice in corso quando coincide con quello
+ * in cui i dati sono stati pubblicati.
+ */
+function scriviNotaMeseInCorso() {
+  const el = document.getElementById("notaMeseParziale");
+  if (!el) return;
+  const build = state.manifest && state.manifest.built_at_utc
+    ? String(state.manifest.built_at_utc).slice(0, 7) : "";
+  let ultimo = "";
+  for (const r of getFilteredSeriesRows()) {
+    const m = String(r.mese || "").slice(0, 7);
+    if (m > ultimo) ultimo = m;
+  }
+  const avvisi = [];
+  if (build && ultimo && ultimo === build) {
+    avvisi.push("L'ultimo punto è il mese in corso, che non è finito: i conteggi sono parziali, le percentuali no.");
+  }
+
+  // I mesi troppo piccoli per una percentuale non vengono disegnati, e un buco
+  // muto e' peggio di un punto sbagliato: qui si dice quanti sono. Con un
+  // filtro stretto possono essere quasi tutti, e allora il grafico quasi vuoto
+  // e' l'informazione, non un guasto.
+  const mesi = aggregateByMonth(getFilteredSeriesRows()).filter((o) => !o.vuoto);
+  const nascosti = mesi.filter((o) => o.corse < SOGLIA_CORSE_SIGNIFICATIVE).length;
+  if (nascosti > 0) {
+    avvisi.push(nascosti === mesi.length
+      ? `Nessun mese ha almeno ${SOGLIA_CORSE_SIGNIFICATIVE} corse: su numeri così piccoli una percentuale vale 0 o 100 a seconda della singola corsa, quindi non viene disegnata.`
+      : `${nascosti} mesi su ${mesi.length} hanno meno di ${SOGLIA_CORSE_SIGNIFICATIVE} corse e non sono disegnati: la percentuale lì non direbbe nulla.`);
+  }
+
+  // Un filtro acceso che non filtra va detto qui, non lasciato indovinare.
+  const inerti = filtriNonApplicabiliAllaTratta();
+  if (inerti.length) {
+    avvisi.push(`Su questa tratta i dati sono per mese, stazione e categoria: ` +
+      `il filtro per ${inerti.join(" e ")} non è applicato ai numeri qui sopra.`);
+  }
+  el.textContent = avvisi.join(" ");
 }
 
 /* ────────────────── render histogram ────────────────── */
 
 function normalizeBucketLabel(s) { return String(s || "").replace(/\s+/g, "").trim(); }
+
+/**
+ * La curva di quante corse restano oltre una certa soglia di ritardo.
+ *
+ * L'istogramma dice quante corse stanno in ogni classe, che e' la domanda
+ * sbagliata per chi vuole sapere se il treno arriva tardi: le barre dopo i
+ * cinque minuti sono basse una per una, ma sommate no. La cumulata risponde
+ * alla domanda giusta, "quante superano i dieci minuti", leggendo un punto solo.
+ *
+ * Parte dai cinque minuti perche' sotto quella soglia lo scostamento e' il
+ * margine dell'orario, non un ritardo che qualcuno percepisce, e si ferma prima
+ * delle due classi in coda, che non sono ritardi ma corse mai arrivate.
+ */
+function cumulataOltre5(byBucket, totale) {
+  if (!(totale > 0)) return null;
+  const SOGLIE = [
+    { min: 5,   etichetta: "(5,10]" },
+    { min: 10,  etichetta: "(10,15]" },
+    { min: 15,  etichetta: "(15,30]" },
+    { min: 30,  etichetta: "(30,60]" },
+    { min: 60,  etichetta: "(60,120]" },
+    { min: 120, etichetta: "> 120" }
+  ];
+  const conta = (lab) => {
+    const o = byBucket.get(normalizeBucketLabel(lab));
+    return o ? o.count : 0;
+  };
+  // Ogni punto e' la somma delle classi da li' in poi.
+  const x = [], y = [], testo = [];
+  for (let i = 0; i < SOGLIE.length; i++) {
+    let somma = 0;
+    for (let j = i; j < SOGLIE.length; j++) somma += conta(SOGLIE[j].etichetta);
+    const pct = (somma / totale) * 100;
+    x.push(SOGLIE[i].etichetta);
+    y.push(pct);
+    testo.push(`oltre ${SOGLIE[i].min} min: ${fmtFloat(pct)}% (${fmtInt(somma)} corse)`);
+  }
+  if (!y.some((v) => v > 0)) return null;
+
+  // Una corsa mai arrivata e' peggio di una in ritardo, e sulla curva dei soli
+  // minuti non compare. La seconda linea, tratteggiata, somma a ogni soglia le
+  // cancellate, totali e parziali: lo scarto fra le due e' costante, perche'
+  // non dipende dai minuti, ed e' proprio quello il punto, perche' misura il
+  // disservizio che un asse di minuti non puo' mostrare.
+  const cancellate = conta("parzialmente cancellate") + conta("non effettuate");
+  const yConCanc = y.map((v) => v + (cancellate / totale) * 100);
+
+  return {
+    traccia: {
+      x, y, type: "scatter", mode: "lines+markers", name: "oltre la soglia",
+      yaxis: "y2", line: { color: "#b45309", width: 2 }, marker: { size: 6 },
+      hovertext: testo, hovertemplate: "%{hovertext}<extra></extra>"
+    },
+    tracciaConCancellate: cancellate > 0 ? {
+      x, y: yConCanc, type: "scatter", mode: "lines", name: "o cancellata",
+      yaxis: "y2", line: { color: "#b45309", width: 2, dash: "dot" },
+      hovertext: SOGLIE.map((s, i) => `oltre ${s.min} min o cancellata: ${fmtFloat(yConCanc[i])}%`),
+      hovertemplate: "%{hovertext}<extra></extra>"
+    } : null,
+    layout: {
+      yaxis2: {
+        title: isMobile() ? "" : "% oltre la soglia", overlaying: "y", side: "right",
+        rangemode: "tozero", showgrid: false, ticksuffix: "%",
+        tickfont: { color: "#b45309", size: isMobile() ? 8 : undefined },
+        titlefont: { color: "#b45309" }
+      },
+      showlegend: false
+    }
+  };
+}
+
+// Le due classi in coda all'asse non sono intervalli di minuti: sono corse che
+// a destinazione non ci sono arrivate, del tutto o in parte. Con lo stesso
+// colore delle altre si leggono come l'ultimo scaglione di ritardo, che e'
+// proprio l'equivoco da evitare.
+const CLASSI_FUORI_DISTRIBUZIONE = new Set(
+  ["parzialmente cancellate", "non effettuate"].map(normalizeBucketLabel)
+);
+
+function coloreClasse(etichetta) {
+  return CLASSI_FUORI_DISTRIBUZIONE.has(normalizeBucketLabel(etichetta))
+    ? "rgba(185,28,28,0.70)" : "rgba(0,115,230,0.70)";
+}
 
 /** Return true if a histogram bucket label represents delay > 5 minutes.
  *  Matches: (5,10], (10,15], (15,30], (30,60], (60,120], > 120 */
@@ -1730,32 +2073,93 @@ function renderHist() {
       ["15–29", o15 - o30],
       ["30–59", o30 - o60],
       ["≥ 60", o60],
+      // Anche qui le due code sono separate: la tratta con molte limitazioni e
+      // quella con molte soppressioni non sono lo stesso disservizio, e prima
+      // le prime non comparivano affatto in questa vista.
+      ["parzialmente cancellate", sum("parzialmente_cancellate")],
       ["non effettuate", sum("non_effettuate")]
     ];
-    const misurate = classi.slice(0, -1).reduce((a, c) => a + Math.max(0, c[1]), 0);
+    const misurate = classi.slice(0, -2).reduce((a, c) => a + Math.max(0, c[1]), 0);
     const tot = classi.reduce((a, c) => a + Math.max(0, c[1]), 0);
 
     if (noteEl) {
-      const depSel2 = document.getElementById("depSel");
-      const arrSel2 = document.getElementById("arrSel");
-      const dn = depSel2 && depSel2.selectedIndex >= 0 ? depSel2.options[depSel2.selectedIndex].text : state.filters.dep;
-      const an = arrSel2 && arrSel2.selectedIndex >= 0 ? arrSel2.options[arrSel2.selectedIndex].text : state.filters.arr;
+      const dn = etichettaStazioneSelezionata("depSel", state.filters.dep);
+      const an = etichettaStazioneSelezionata("arrSel", state.filters.arr);
+      // Le corse osservate sulla tratta non sono la somma delle barre: quelle
+      // partite senza una misura utilizzabile non hanno una classe qui, e su
+      // Milano Centrale - Roma Termini sono 1.459 su 14.595, il dieci per
+      // cento. Nel grafico generale il divario si legge nella descrizione,
+      // qui non si leggeva da nessuna parte.
+      const osservate = sum("corse_osservate");
+      const fuori = Math.max(0, osservate - tot);
       noteEl.textContent = "Distribuzione della tratta " + dn + " → " + an
-        + " (" + fmtInt(misurate) + " corse misurate, " + fmtInt(tot - misurate)
-        + " non effettuate), ricavata dalle soglie della tabella origine-destinazione: "
-        + "classi piu' ampie dei bucket per singola stazione, ma riferite esattamente a questa tratta.";
+        + " (" + fmtInt(misurate) + " corse arrivate a destinazione, " + fmtInt(tot - misurate)
+        + " cancellate del tutto o in parte"
+        + (fuori > 0 ? ", più " + fmtInt(fuori) + " senza una misura utilizzabile, che non hanno una barra" : "")
+        + ")."
+        + (misurate === 0 && tot > 0
+            ? " Su questa tratta la sorgente non rileva mai l'arrivo alla stazione di "
+              + "destinazione: le corse ci sono, la misura del ritardo no, e ogni percentuale "
+              + "qui sarebbe zero per assenza di dato, non perché i treni siano puntuali. "
+              + "Succede su 7.975 coppie, l'8,4% delle corse."
+            : "")
+        + (trattaPerFermate()
+            ? " Sono tutte le corse che percorrono la tratta, comprese quelle che proseguono "
+              + "oltre: fra Milano Centrale e Treviglio sono 599 al mese, non le 9 che a "
+              + "Treviglio terminano. Il filtro per categoria vale anche qui; il tipo di "
+              + "giorno e la fascia oraria no, perché il dettaglio è per mese. La copertura "
+              + "parte da gennaio 2020, da quando la sorgente pubblica le fermate."
+            : " Attenzione: qui contano solo le corse che partono da " + dn + " e finiscono a "
+              + an + ", non quelle che ci passano e proseguono, perché per questa tratta il "
+              + "dettaglio delle fermate non è disponibile.");
       noteEl.style.display = "";
     }
+
+    // Qui la cumulata non va ricavata dalle barre: le colonne oltre_N del gold
+    // sono gia' cumulate per costruzione, quindi si leggono direttamente.
+    const cancTratta = Math.max(0, sum("parzialmente_cancellate")) + Math.max(0, sum("non_effettuate"));
+    const cumOd = tot > 0 && o5 > 0 ? {
+      x: ["5–9", "10–14", "15–29", "30–59", "≥ 60"],
+      y: [o5, o10, o15, o30, o60].map((v) => (Math.max(0, v) / tot) * 100),
+      soglie: [5, 10, 15, 30, 60],
+      conteggi: [o5, o10, o15, o30, o60],
+      // Stessa seconda curva dell'istogramma per stazione: il ritardo da solo
+      // non racconta le corse che a destinazione non sono arrivate.
+      cancellate: cancTratta
+    } : null;
 
     safePlotlyReact(chart,
       [{ x: classi.map((c) => c[0]),
          y: classi.map((c) => showPct ? (tot > 0 ? (Math.max(0, c[1]) / tot) * 100 : 0) : Math.max(0, c[1])),
-         type: "bar", name: showPct ? "%" : "Conteggio" }],
-      { margin: mobileChartMargins({l:50,r:20,t:10,b:70}),
+         type: "bar", name: showPct ? "%" : "Conteggio",
+         marker: { color: classi.map((c) => coloreClasse(c[0])) } },
+       ...(cumOd ? [{
+         x: cumOd.x, y: cumOd.y, type: "scatter", mode: "lines+markers",
+         name: "oltre la soglia", yaxis: "y2",
+         line: { color: "#b45309", width: 2 }, marker: { size: 6 },
+         hovertext: cumOd.soglie.map((s, i) => `oltre ${s} min: ${fmtFloat(cumOd.y[i])}% (${fmtInt(cumOd.conteggi[i])} corse)`),
+         hovertemplate: "%{hovertext}<extra></extra>"
+       }] : []),
+       ...(cumOd && cumOd.cancellate > 0 ? [{
+         x: cumOd.x, y: cumOd.y.map((v) => v + (cumOd.cancellate / tot) * 100),
+         type: "scatter", mode: "lines", name: "o cancellata", yaxis: "y2",
+         line: { color: "#b45309", width: 2, dash: "dot" },
+         hovertext: cumOd.soglie.map((s, i) => `oltre ${s} min o cancellata: ${fmtFloat(cumOd.y[i] + (cumOd.cancellate / tot) * 100)}%`),
+         hovertemplate: "%{hovertext}<extra></extra>"
+       }] : [])],
+      // Le due classi in coda hanno etichette lunghe il triplo delle altre, e
+      // orizzontali si scavallavano fra loro e sopra "≥ 60": inclinate e con
+      // automargin ognuna ha il suo spazio. Stessa scelta dell'istogramma per
+      // stazione, che aveva lo stesso difetto.
+      Object.assign({ margin: mobileChartMargins({l:50,r:cumOd?(isMobile()?28:70):20,t:10,b:110}),
         yaxis: {title: isMobile() ? "" : (showPct ? "%" : "Conteggio"), rangemode: "tozero"},
-        xaxis: {title: isMobile() ? "" : "minuti di ritardo all'arrivo", tickangle: isMobile() ? -45 : 0,
-                tickfont: {size: isMobile() ? 8 : undefined}},
+        xaxis: {title: isMobile() ? "" : "minuti di ritardo all'arrivo", tickangle: isMobile() ? -45 : -35,
+                automargin: true, tickfont: {size: isMobile() ? 8 : undefined}},
         paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font: mobileFont() },
+        cumOd ? { yaxis2: { title: isMobile() ? "" : "% oltre la soglia", overlaying: "y", side: "right",
+                            rangemode: "tozero", showgrid: false, ticksuffix: "%",
+                            tickfont: { color: "#b45309", size: isMobile() ? 8 : undefined },
+                            titlefont: { color: "#b45309" } }, showlegend: false } : {}),
       { displayModeBar: false, responsive: true }
     );
 
@@ -1810,9 +2214,20 @@ function renderHist() {
     y.push(showPct ? (total > 0 ? (c / total) * 100 : 0) : c);
   }
 
+  const cum = cumulataOltre5(byBucket, total);
+
   safePlotlyReact(chart,
-    [{ x, y, type: "bar", name: showPct ? "%" : "Conteggio" }],
-    { margin:mobileChartMargins({l:50,r:20,t:10,b:70}), yaxis:{title:isMobile()?"":showPct?"%":"Conteggio",rangemode:"tozero"}, xaxis:{tickangle:isMobile()?-45:-35,tickfont:{size:isMobile()?7:undefined}}, paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)", font:mobileFont() },
+    [{ x, y, type: "bar", name: showPct ? "%" : "Conteggio",
+       marker: { color: x.map((lab) => coloreClasse(lab)) } },
+     ...(cum ? [cum.traccia] : []),
+     ...(cum && cum.tracciaConCancellate ? [cum.tracciaConCancellate] : [])],
+    // Margine basso piu' alto e automargin: "parzialmente cancellate" e' lunga
+    // il triplo di "(30,60]" e inclinata usciva dal riquadro, tagliata a meta'.
+    // Con la cumulata serve spazio a destra: l'asse secondario porta i suoi tick
+    // e il suo titolo, e con il margine tarato su un asse solo il titolo finiva
+    // scritto sopra i numeri.
+    Object.assign({ margin:mobileChartMargins({l:50,r:cum?(isMobile()?28:70):20,t:10,b:110}), yaxis:{title:isMobile()?"":showPct?"%":"Conteggio",rangemode:"tozero"}, xaxis:{tickangle:isMobile()?-45:-35,automargin:true,tickfont:{size:isMobile()?7:undefined}}, paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)", font:mobileFont() },
+      cum ? cum.layout : {}),
     { displayModeBar: false, responsive: true }
   );
 
@@ -1821,10 +2236,7 @@ function renderHist() {
   var costVal = document.getElementById("costValue");
   if (costEl && costVal) {
     if (delayMinsOver5 > 0) {
-      var cost = delayMinsOver5 * COST_PER_MINUTE;
-      costVal.textContent = cost >= 1000
-        ? "\u20AC " + (cost / 1000).toFixed(1) + "k"
-        : "\u20AC " + cost.toFixed(2);
+      costVal.textContent = fmtEuro(delayMinsOver5 * COST_PER_MINUTE);
       costEl.style.display = "";
     } else {
       costEl.style.display = "none";
@@ -1832,10 +2244,37 @@ function renderHist() {
   }
 }
 
+/**
+ * Un importo in euro, scritto come lo scrive un italiano.
+ *
+ * Prima c'era un solo salto di scala, e senza filtri l'indicatore mostrava
+ * "€ 2481.6k": due milioni e mezzo scritti come "2481,6 mila", per giunta col
+ * punto decimale mentre tutto il resto della dashboard passa da toLocaleString.
+ */
+function fmtEuro(v) {
+  var n = Number(v) || 0;
+  var it = function(x, d) { return x.toLocaleString("it-IT", { minimumFractionDigits: d, maximumFractionDigits: d }); };
+  if (n >= 1e9) return "€ " + it(n / 1e9, 1) + " mld";
+  if (n >= 1e6) return "€ " + it(n / 1e6, 1) + " mln";
+  if (n >= 1e3) return "€ " + it(Math.round(n), 0);
+  return "€ " + it(n, 2);
+}
+
 /* ────────────────── map helpers ────────────────── */
 
+// Sotto questo numero di osservazioni una percentuale non dice niente. La usano
+// sia la mappa sia la Top 10, che leggono le stesse righe: tenerla in un solo
+// posto evita che le due viste raccontino due cose diverse sugli stessi dati.
+const SOGLIA_CORSE_SIGNIFICATIVE = 30;
+
 function capoluogoKey(cityName) {
-  const name = normalizeText(cityName);
+  // La stessa normalizzazione usata ovunque per i nomi stazione, non il solo
+  // normalizeText: senza di essa "REGGIO DI CALABRIA CENTRALE" non trovava il
+  // capoluogo "reggio calabria" (218.826 corse fuori da mappa e Top 10, e la
+  // stazione che appariva o spariva a seconda dell'anno, perche' lo shard 2026
+  // la scrive senza "DI"), e i nomi che portano l'accento come apice inverso,
+  // FORLI` e L`AQUILA, non lo trovavano mai.
+  const name = normalizeText(normalizeStationName(cityName));
   if (!name) return "";
   if (!state.capoluoghiSet || state.capoluoghiSet.size === 0) return name;
   if (state.capoluoghiSet.has(name)) return name;
@@ -1845,9 +2284,33 @@ function capoluogoKey(cityName) {
   return "";
 }
 
-function prettyCityName(cityKey, fallback) {
-  const raw = String(fallback || "").trim();
-  if (raw && normalizeText(raw) === cityKey) return raw;
+/**
+ * Il testo dell'opzione selezionata in una tendina di stazioni, o il nome
+ * della stazione quando quell'opzione non c'e' piu'.
+ *
+ * Le due tendine vengono ripopolate con le sole stazioni presenti nella
+ * tabella origine-destinazione, che sono meno di quelle dell'anagrafica. Se
+ * la stazione scelta non e' fra queste, il DOM porta selectedIndex a -1 e
+ * options[-1] e' undefined: leggerne .text sollevava un TypeError dentro
+ * renderFilterBadges, che e' la prima riga di renderAll, e faceva saltare in
+ * silenzio l'intero ridisegno (KPI, serie, istogramma, mappa, Top 10).
+ */
+function etichettaStazioneSelezionata(idTendina, codice) {
+  var sel = document.getElementById(idTendina);
+  if (sel && sel.selectedIndex >= 0 && sel.options[sel.selectedIndex]) {
+    return sel.options[sel.selectedIndex].text;
+  }
+  return stationName(codice, codice);
+}
+
+/**
+ * Il nome di citta' come va scritto in etichetta.
+ *
+ * Prima, quando il nome della stazione coincideva con quello della citta', si
+ * restituiva il grezzo della sorgente, che e' tutto maiuscolo: nello stesso
+ * grafico convivevano "PAVIA" e "Como". Ora la forma e' sempre la stessa.
+ */
+function prettyCityName(cityKey) {
   return String(cityKey || "").toLowerCase().replace(/\b([a-zàèéìòù])/g, (m) => m.toUpperCase());
 }
 
@@ -1893,7 +2356,7 @@ function renderStationsTop10() {
     if (!cityKey) continue;  // skip non-capoluogo stations
 
     if (!agg.has(cityKey)) {
-      agg.set(cityKey, { nome: prettyCityName(cityKey, city), corse_osservate:0, corse_con_misura:0, in_ritardo:0, minuti_ritardo_tot:0, cancellate_tot:0, soppresse:0 });
+      agg.set(cityKey, { nome: prettyCityName(cityKey), corse_osservate:0, corse_con_misura:0, in_ritardo:0, minuti_ritardo_tot:0, cancellate_tot:0, soppresse:0 });
     }
     const a = agg.get(cityKey);
     a.corse_osservate += toNum(r.corse_osservate);
@@ -1909,6 +2372,20 @@ function renderStationsTop10() {
   out.forEach((o) => { o.pct_ritardo = o.corse_con_misura > 0 ? (o.in_ritardo / o.corse_con_misura) * 100 : 0; });
 
   const metric = getStationsMetric();
+  // La stessa soglia di significativita' della mappa, che lavora sugli stessi
+  // dati: senza, con un filtro stretto la classifica si riempiva di capoluoghi
+  // al 100% di ritardo su una corsa sola, e Bologna con 786 corse finiva sesta.
+  // Vale solo per le percentuali: sui conteggi assoluti un numero piccolo e'
+  // gia' l'informazione, non rumore.
+  //
+  // Basta che ne resti una. La condizione era "almeno tre", e sotto quel numero
+  // riammetteva l'intera classifica, cioe' faceva rientrare le percentuali su
+  // una corsa proprio nel caso, il filtro stretto, in cui sono piu' probabili.
+  // Una barra sola e' un risultato magro ma vero; dieci barre di rumore no.
+  if (metric === "pct_ritardo") {
+    const significativi = out.filter((o) => o.corse_con_misura >= SOGLIA_CORSE_SIGNIFICATIVE);
+    if (significativi.length) out = significativi;
+  }
   out.sort((a, b) => toNum(b[metric]) - toNum(a[metric]));
   const top10 = out.slice(0, 10).reverse();
 
@@ -1916,8 +2393,27 @@ function renderStationsTop10() {
   const xValues = top10.map((o) => toNum(o[metric]));
   const label = stationsMetricLabel();
 
+  // Su quante corse poggia la barra. Senza questo, la classifica mette sulla
+  // stessa riga Pordenone, che sullo storico intero ha 340 corse misurate, e
+  // Milano, che ne ha 3,3 milioni: passano entrambe la soglia, ma non sono
+  // numeri della stessa solidita' e chi legge non ha modo di accorgersene. La
+  // mappa lo dice gia' nel popup, qui mancava.
+  const percentuale = metric === "pct_ritardo";
+  // Con la metrica "corse osservate" la base sarebbe il valore stesso: la
+  // seconda riga direbbe due volte lo stesso numero.
+  const conBase = metric !== "corse_osservate";
+  const dettaglio = top10.map((o) => [
+    percentuale ? fmtFloat(toNum(o[metric])) + "%" : fmtInt(toNum(o[metric])),
+    percentuale
+      ? fmtInt(o.corse_con_misura) + " corse misurate"
+      : fmtInt(o.corse_osservate) + " corse osservate"
+  ]);
+
   safePlotlyReact(chart,
-    [{ x:xValues, y:yLabels, type:"bar", orientation:"h", name:label, marker:{color:"rgba(0,115,230,0.70)"} }],
+    [{ x:xValues, y:yLabels, type:"bar", orientation:"h", name:label, marker:{color:"rgba(0,115,230,0.70)"},
+       customdata: dettaglio,
+       hovertemplate: "<b>%{y}</b><br>" + label + ": %{customdata[0]}"
+         + (conBase ? "<br>su %{customdata[1]}" : "") + "<extra></extra>" }],
     { margin:isMobile()?{l:10,r:10,t:10,b:40}:{l:180,r:30,t:10,b:50}, xaxis:{title:isMobile()?"":label,rangemode:"tozero"}, yaxis:{automargin:true}, paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)", font:mobileFont() },
     { displayModeBar: false, responsive: true }
   );
@@ -2017,7 +2513,7 @@ function renderMap() {
     if (!coords) continue;
 
     if (!agg.has(cityKey)) {
-      agg.set(cityKey, { cityKey, nome:prettyCityName(cityKey,city), corse_osservate:0, corse_con_misura:0, in_ritardo:0, minuti_ritardo_tot:0, soppresse:0, cancellate_tot:0, oltre_5:0, oltre_10:0, oltre_15:0, oltre_30:0, oltre_60:0, lat_weighted_sum:0, lon_weighted_sum:0, weight_sum:0 });
+      agg.set(cityKey, { cityKey, nome:prettyCityName(cityKey), corse_osservate:0, corse_con_misura:0, in_ritardo:0, minuti_ritardo_tot:0, soppresse:0, cancellate_tot:0, oltre_5:0, oltre_10:0, oltre_15:0, oltre_30:0, oltre_60:0, lat_weighted_sum:0, lon_weighted_sum:0, weight_sum:0 });
     }
     const a = agg.get(cityKey);
     const corse = toNum(r.corse_osservate);
@@ -2083,8 +2579,16 @@ function renderMap() {
   // riserva. Si disegnano in grigio, con il conteggio nel popup, e restano
   // fuori dalla scala di colore, altrimenti un valore estremo calcolato su tre
   // osservazioni allarga la rampa e sbiadisce tutte le altre.
-  const SOGLIA_CORSE = 30;
-  const affidabile = (p) => Math.max(0, toNum(p.corse_osservate)) >= SOGLIA_CORSE;
+  // La soglia va sul denominatore della metrica disegnata, non sulle corse
+  // osservate: quando il colore porta una percentuale, il denominatore sono le
+  // corse con una misura utilizzabile, e una citta' con tante corse osservate
+  // ma poche misurate ha una percentuale altrettanto fragile pur passando il
+  // controllo. Con una metrica di conteggio la riserva non ha senso: dieci
+  // soppressioni sono dieci soppressioni, non un campione. Stessa scelta della
+  // Top 10, che applica la soglia solo alla percentuale.
+  const SOGLIA_CORSE = SOGLIA_CORSE_SIGNIFICATIVE;
+  const inPercentuale = soglia.attiva || getMetricMode() === "pct";
+  const affidabile = (p) => !inPercentuale || measuredRuns(p) >= SOGLIA_CORSE;
 
   // Scala di colore su percentili: i valori sono molto asimmetrici e una scala
   // lineare sul massimo appiattirebbe quasi tutto sul primo colore.
@@ -2113,11 +2617,24 @@ function renderMap() {
     const ratio = maxVolume > 0 ? Math.sqrt(vol / maxVolume) : 0;
     const radius = minRadius + ratio * (maxRadius - minRadius);
     const poche = !affidabile(p);
+    // Quante corse non sono state fatte, distinguendo chi non e' partito da chi
+    // e' partito e si e' fermato per strada. Il popup dava solo le corse
+    // osservate, e una citta' con molte soppressioni sembrava uguale a una
+    // senza: il dato peggiore era l'unico che non si poteva leggere qui.
+    const sopp = Math.max(0, toNum(p.soppresse));
+    const cancTot = Math.max(0, toNum(p.cancellate_tot));
+    const parziali = Math.max(0, cancTot - sopp);
+    const quota = (n) => vol > 0 ? " (" + fmtFloat(100 * n / vol) + "%)" : "";
     const label = "<b>" + p.nome + "</b><br>" + etichettaMetricaMappa() + ": " + fmtFloat(val)
       + "<br>Corse osservate: " + fmtInt(vol)
-      + (poche ? "<br><i>Sotto le " + SOGLIA_CORSE + " corse: la percentuale non e' significativa. "
-                 + "Il dato copre solo origine e destinazione, quindi le stazioni di transito "
-                 + "compaiono di rado.</i>" : "");
+      + "<br>Non effettuate: " + fmtInt(sopp) + quota(sopp)
+      + (parziali > 0 ? "<br>Cancellate in parte: " + fmtInt(parziali) + quota(parziali) : "")
+      // Il numero che regge la percentuale e' questo, non quello sopra: si
+      // mostra dove fa la differenza, cioe' quando la riserva scatta.
+      + (poche ? "<br>Corse con misura: " + fmtInt(measuredRuns(p))
+                 + "<br><i>Sotto le " + SOGLIA_CORSE + " corse misurate: la percentuale non è "
+                 + "significativa. Il dato copre solo origine e destinazione, quindi le stazioni "
+                 + "di transito compaiono di rado.</i>" : "");
 
     const m = L.circleMarker([p.coords.lat, p.coords.lon], {
       radius: radius,
@@ -2270,14 +2787,23 @@ async function lazyLoadCSV(fileName, stateKey) {
   if (state.data[stateKey] && state.data[stateKey].length > 0) { _lazyLoaded[fileName] = true; return; }
   // If this file is already being loaded, wait for the existing load instead of starting a new one
   if (_lazyLoading[fileName]) return _lazyLoading[fileName];
+  // L'anno per cui questo scaricamento e' partito. Al ritorno puo' non essere
+  // piu' quello selezionato: cambiare anno mentre una fetch e' in volo non la
+  // annulla, e la risposta vecchia scriveva comunque i suoi dati marcandoli
+  // come "caricati per l'anno nuovo". Il file non veniva piu' richiesto e
+  // restava a schermo un anno con i dati di un altro, o zero corse con i badge
+  // del filtro che dicevano il contrario, finche' non si cambiava anno di nuovo.
+  var annoRichiesto = state.filters.year;
   _lazyLoading[fileName] = (async function() {
     try {
       var t = await fetchTextAny(shardCandidates(fileName));
+      if (state.filters.year !== annoRichiesto) return;  // risposta ormai vecchia
       var rows = t ? await parseCSVAsync(t, 5000, mobileYearFilter()) : [];
       t = null;  // Release text reference for GC
+      if (state.filters.year !== annoRichiesto) return;
       state.data[stateKey] = rows;
       _lazyLoaded[fileName] = true;
-      _lazyLoadedYear = state.filters.year;
+      _lazyLoadedYear = annoRichiesto;
       invalidateFilterCache();
       enrichStationsRefFromFacts();
     } finally {
@@ -2471,7 +2997,30 @@ const METRICHE_KM = {
   km_h_programmati:  { titolo: "Velocità commerciale (km/h)",    decrescente: false, decimali: 0 }
 };
 
-const QUANTE_TRATTE_KM = 15;
+// Venticinque invece di quindici: con quindici il grafico mostrava solo il
+// pendolarismo piu' lento, e chi cercava una tratta lunga non trovava mai un
+// termine di paragone. Sopra la trentina l'asse verticale diventa illeggibile.
+const QUANTE_TRATTE_KM = 25;
+
+// Le fasce servono a confrontare tratte confrontabili. La classifica su tutte
+// le lunghezze premia per costruzione le piu' corte, dove manovre e fermate
+// pesano su pochi chilometri: le quattro tratte che attraversano lo Stretto
+// stanno intorno al novecentesimo posto su millecentosettanta, ma dentro la
+// fascia oltre i cinquecento chilometri sono prima, seconda, terza e quinta su
+// cinquantasei. Sono cioe' le piu' lente d'Italia fra le lunghe, e senza le
+// fasce non c'era modo di vederlo.
+const FASCE_KM = {
+  "0-60": [0, 60],
+  "60-200": [60, 200],
+  "200-500": [200, 500],
+  "500-99999": [500, 99999]
+};
+
+function fasciaKmSelezionata() {
+  const sel = document.getElementById("kmLunghezzaSel");
+  const v = sel ? String(sel.value || "all") : "all";
+  return FASCE_KM[v] ? { chiave: v, min: FASCE_KM[v][0], max: FASCE_KM[v][1] } : null;
+}
 
 function getKmMetric() {
   const sel = document.getElementById("kmMetricSel");
@@ -2505,7 +3054,9 @@ function renderKmRanking() {
   if (!chart || isCardCollapsed(chart)) return;
   if (typeof Plotly !== "object") return;
 
-  const righe = (state.data.km || []).filter((r) => Number.isFinite(toNum(r.km)) && toNum(r.km) > 0);
+  let righe = (state.data.km || []).filter((r) => Number.isFinite(toNum(r.km)) && toNum(r.km) > 0);
+  const fascia = fasciaKmSelezionata();
+  if (fascia) righe = righe.filter((r) => toNum(r.km) >= fascia.min && toNum(r.km) < fascia.max);
   const nota = document.getElementById("kmNote");
   if (!righe.length) {
     safePlotlyReact(chart, [], {}, { displayModeBar: false, responsive: true });
@@ -2524,10 +3075,21 @@ function renderKmRanking() {
 
   const etichette = top.map(titoloTratta);
   const valori = top.map((r) => toNum(r[metrica]));
-  const dettaglio = top.map((r) =>
-    `${toNum(r.km).toFixed(0)} km, ${toNum(r.durata_media_min).toFixed(0)} min d'orario, ` +
-    `${toNum(r.ritardo_medio_min).toFixed(1)} min di ritardo, ` +
-    `${toNum(r.km_h_programmati).toFixed(0)} km/h, ${fmtInt(toNum(r.corse))} corse`);
+  const rif = riferimentoStretto(righe, metrica, cfg, Math.max.apply(null, valori));
+  // Su quanti mesi poggia la media, e fra quali estremi. Una tratta esistita
+  // sette mesi sparsi fra il 2020 e il 2024 sta nella stessa classifica di una
+  // osservata per sei anni di fila, e senza questo non c'e' modo di saperlo:
+  // Costa Masnaga - Milano Porta Garibaldi e' quarta con sette mesi di dati.
+  const dettaglio = top.map((r) => {
+    const mesi = toNum(r.mesi);
+    const arco = mesi > 0
+      ? `, presente in ${fmtInt(mesi)} mesi` +
+        (r.primo_mese && r.ultimo_mese ? ` (${r.primo_mese} → ${r.ultimo_mese})` : "")
+      : "";
+    return `${toNum(r.km).toFixed(0)} km, ${toNum(r.durata_media_min).toFixed(0)} min d'orario, ` +
+      `${toNum(r.ritardo_medio_min).toFixed(1)} min di ritardo, ` +
+      `${toNum(r.km_h_programmati).toFixed(0)} km/h, ${fmtInt(toNum(r.corse))} corse${arco}`;
+  });
 
   safePlotlyReact(chart,
     [{
@@ -2538,24 +3100,189 @@ function renderKmRanking() {
       hovertext: dettaglio, textposition: "none",
       hovertemplate: "<b>%{y}</b><br>%{x:.1f}<br>%{hovertext}<extra></extra>"
     }],
-    {
-      margin: isMobile() ? { l:10, r:10, t:10, b:40 } : { l:230, r:30, t:10, b:50 },
+    Object.assign({
+      // Sopra il grafico ci sono due etichette, il riferimento delle tratte via
+      // nave e la media della platea: con dieci pixel di margine finivano fuori
+      // dall'area e non si vedevano.
+      margin: isMobile() ? { l:10, r:10, t:30, b:40 } : { l:230, r:30, t:30, b:50 },
       xaxis: { title: isMobile() ? "" : cfg.titolo, rangemode: "tozero" },
       yaxis: { automargin: true },
       paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font: mobileFont()
-    },
+    }, rif.layout),
     { displayModeBar: false, responsive: true }
   );
 
   if (nota) {
     const ufficiali = righe.filter((r) => String(r.qualita_km) === "ufficiale").length;
+    // Che siano le peggiori, e in che verso si legga il grafico, non lo diceva
+    // nessuna riga della pagina: il lettore poteva prenderle per un campione, o
+    // peggio per le migliori, e sulla velocita' commerciale l'ordine si
+    // capovolge perche' li' il caso peggiore e' il numero piu' basso.
+    // Non tutte le tratte vivono per tutto il periodo, e la classifica non lo
+    // diceva: 226 su 1.168 stanno sotto i due anni di presenza, 66 sotto
+    // l'anno, e una tratta attiva solo durante una deviazione per lavori ha per
+    // costruzione tempi peggiori, quindi sale in cima proprio perche' e' un
+    // caso eccezionale. Il conto delle poco continue si fa sulle quindici
+    // mostrate, che sono quelle che il lettore ha davanti.
+    const MESI_CONTINUA = 24;
+    const parziali = top.filter((r) => toNum(r.mesi) > 0 && toNum(r.mesi) < MESI_CONTINUA).length;
     nota.textContent =
-      `${fmtInt(righe.length)} tratte con almeno 300 corse e 30 km, ` +
+      `Le ${top.length} messe peggio, dalla peggiore in cima, ` +
+      (fascia
+        ? `su ${fmtInt(righe.length)} tratte ${fascia.max >= 99999 ? "oltre i " + fascia.min : (fascia.min ? "fra " + fascia.min + " e " + fascia.max : "fino a " + fascia.max)} km; `
+        : `su ${fmtInt(righe.length)} tratte con almeno 300 corse e 30 km; `) +
       `${Math.round(100 * ufficiali / righe.length)}% con la distanza ufficiale del RINF. ` +
-      "Sotto i 30 km il rapporto per chilometro misura le manovre invece del viaggio.";
+      "Sotto i 30 km il rapporto per chilometro misura le manovre invece del viaggio." +
+      (parziali > 0
+        ? ` Attenzione: ${parziali} di queste ${top.length} esistono in meno di due anni di dati e non `
+          + "sono confrontabili con le altre; il passaggio del mouse dice su quanti mesi poggia ciascuna."
+        : "") +
+      (rif.nota ? " " + rif.nota : "");
   }
 
   renderStretto(righe);
+}
+
+/**
+ * La linea verticale che segna dove cadono le tratte che passano dallo Stretto.
+ *
+ * Con una metrica per chilometro quelle tratte non entrano mai in classifica:
+ * i 122 minuti della nave, spalmati su 649 km di Roma-Messina, valgono 19
+ * minuti per 100 km, e le quattro tratte via mare stanno intorno al
+ * novecentesimo posto su millecentosessantotto. Non e' un difetto del calcolo,
+ * e' che dividere per la lunghezza premia le tratte lunghe: la correlazione fra
+ * chilometri e minuti per 100 km e' -0,53, e le prime quindici hanno una
+ * lunghezza mediana di 37 km contro i 79 di tutte le altre.
+ *
+ * Una barra in fondo al grafico direbbe la stessa cosa allungandolo; una linea
+ * verticale dice dove cadono senza toccare la classifica. La banda copre il
+ * minimo e il massimo delle quattro, perche' un valore solo fingerebbe una
+ * precisione che non c'e'.
+ *
+ * Quando il riferimento cade oltre la barra piu' lunga non si disegna, e lo
+ * dice la nota sotto il grafico. Sulla velocita' commerciale succede: le prime
+ * quindici stanno fra 25 e 31 km/h, le tratte via nave a 67-74, e per farle
+ * entrare Plotly allungava l'asse fino a 83, schiacciando in un terzo dello
+ * spazio proprio le barre che il grafico deve mettere a confronto. Un
+ * riferimento accessorio non puo' rovinare la vista principale.
+ */
+/**
+ * La media della platea con cui la classifica sta confrontando.
+ *
+ * Una barra a 89 minuti per cento chilometri non dice niente da sola: dice
+ * molto se accanto c'e' il valore tipico delle tratte con cui la si sta
+ * confrontando. Cambiando fascia il riferimento si sposta, ed e' il punto: le
+ * lunghe percorrenze stanno intorno ai 54 minuti per cento chilometri, le
+ * tratte fino a sessanta chilometri intorno ai 130, quindi una tratta lunga a
+ * 89 e' lenta per la sua categoria mentre una corta a 89 sarebbe fra le piu'
+ * veloci d'Italia.
+ *
+ * La media e' pesata sulle corse, non sulle tratte: conta quanto servizio
+ * viaggia a quella velocita', non quante righe ci sono in tabella.
+ */
+function mediaDellaPlatea(righe, metrica) {
+  let n = 0, d = 0;
+  for (const r of righe) {
+    const v = toNum(r[metrica]), peso = Math.max(0, toNum(r.corse));
+    if (Number.isFinite(v) && v > 0 && peso > 0) { n += v * peso; d += peso; }
+  }
+  return d > 0 ? n / d : null;
+}
+
+function riferimentoStretto(righe, metrica, cfg, massimoBarre) {
+  // Con la precisione della metrica, non con quella di fmtFloat: su una
+  // classifica di numeri interi l'etichetta scriveva "80,94-88,99".
+  const dec = cfg.decimali;
+  const scrivi = (v) => v.toLocaleString("it-IT", { minimumFractionDigits: dec, maximumFractionDigits: dec });
+
+  // La media della platea vale per ogni fascia, anche dove non passa nessuna
+  // tratta via nave: si calcola prima di qualunque uscita anticipata, o sulle
+  // fasce corte sparirebbe proprio dove serve di piu' per dare la misura.
+  const media = mediaDellaPlatea(righe, metrica);
+  const conMedia = media !== null && media > 0 && media <= massimoBarre;
+  const formeMedia = conMedia ? [{
+    type: "line", xref: "x", yref: "paper", x0: media, x1: media, y0: 0, y1: 1,
+    line: { color: "#0f766e", width: 2 }
+  }] : [];
+  const noteMedia = conMedia ? [{
+    x: media, xref: "x", y: 1.01, yref: "paper", yanchor: "bottom",
+    xanchor: media > massimoBarre * 0.6 ? "right" : "left",
+    text: "media: " + scrivi(media), showarrow: false,
+    font: { size: isMobile() ? 9 : 11, color: "#0f766e" }
+  }] : [];
+  const soloMedia = { layout: conMedia ? { shapes: formeMedia, annotations: noteMedia } : {}, nota: "" };
+
+  const VERO = new Set(["true", "1", "si", "sì", "vero"]);
+  const valori = righe
+    .filter((r) => VERO.has(String(r.attraversa_stretto).toLowerCase()))
+    .map((r) => toNum(r[metrica]))
+    .filter((v) => Number.isFinite(v) && v > 0)
+    .sort((a, b) => a - b);
+  if (!valori.length) return soloMedia;
+
+  const lo = valori[0], hi = valori[valori.length - 1];
+  const intervallo = scrivi(lo) === scrivi(hi) ? scrivi(lo) : scrivi(lo) + "-" + scrivi(hi);
+
+  if (!(hi <= massimoBarre)) {
+    // L'unita' sta fra parentesi nel titolo della metrica, dove c'e': senza,
+    // la frase finirebbe con un numero nudo ("stanno a 67-74, fuori dalla").
+    const unita = (String(cfg.titolo).match(/\(([^)]+)\)/) || [])[1];
+    return {
+      layout: soloMedia.layout,
+      nota: `Le ${valori.length} tratte che attraversano lo Stretto stanno a ` +
+            `${intervallo}${unita ? " " + unita : ""}, fuori dalla scala di questo grafico.`
+    };
+  }
+
+  const linea = (x) => ({
+    type: "line", xref: "x", yref: "paper", x0: x, x1: x, y0: 0, y1: 1,
+    line: { color: "#b91c1c", width: 1.5, dash: "dot" }
+  });
+  const forme = [linea(lo)].concat(formeMedia);
+  // Con una sola linea a coprire un intervallo si perderebbe l'estremo opposto:
+  // meglio due linee e la fascia in mezzo, che e' dove stanno tutte e quattro.
+  if (hi > lo) {
+    forme.push(linea(hi));
+    forme.push({
+      type: "rect", xref: "x", yref: "paper", x0: lo, x1: hi, y0: 0, y1: 1,
+      fillcolor: "rgba(185,28,28,0.07)", line: { width: 0 }
+    });
+  }
+
+  return {
+    layout: {
+      shapes: forme,
+      annotations: [{
+        x: hi, xref: "x", y: 1, yref: "paper", yanchor: "bottom", xanchor: isMobile() ? "right" : "left",
+        text: "tratte via nave: " + intervallo, showarrow: false,
+        font: { size: isMobile() ? 9 : 11, color: "#b91c1c" }
+      }].concat(noteMedia)
+    },
+    nota: ""
+  };
+}
+
+/**
+ * L'esempio che chiude l'avvertenza sulla mappa, calcolato invece che scritto.
+ *
+ * Il testo diceva "Milano-Piacenza risulta a 54 km/h": la media pesata sulle
+ * corse delle tratte Milano-Piacenza e' 53,4, e il 54 era il valore della sola
+ * Lambrate, ottocentottantasei corse su novantanovemila. Un numero battuto nel
+ * codice si scolla dai dati alla prima ricostruzione, quindi qui si ricava.
+ */
+function esempioRegionali() {
+  const righe = state.data.km || [];
+  let n = 0, d = 0;
+  for (const r of righe) {
+    const a = String(r.partenza || ""), b = String(r.arrivo || "");
+    const coppia = (a.startsWith("MILANO") && b === "PIACENZA") ||
+                   (b.startsWith("MILANO") && a === "PIACENZA");
+    if (!coppia) continue;
+    const peso = toNum(r.corse), v = toNum(r.km_h_programmati);
+    if (peso > 0 && v > 0) { n += peso * v; d += peso; }
+  }
+  if (!(d > 0)) return "";
+  return " Milano-Piacenza risulta a " + Math.round(n / d) + " km/h per questo motivo.";
 }
 
 /**
@@ -2583,13 +3310,22 @@ function renderStretto(righe) {
   const dMin = toNum(viaNave.durata_media_min) - toNum(viaTerra.durata_media_min);
   if (!(dMin > 0) || Math.abs(dKm) > 40) { el.textContent = ""; return; }
 
-  const ore = (m) => Math.floor(m / 60) + "h" + String(Math.round(m % 60)).padStart(2, "0");
+  // "2h00" in mezzo a una frase si legge male: quando i minuti tornano tondi
+  // si scrive "2 ore", che e' come lo direbbe chi la frase la legge ad alta voce.
+  const ore = (m) => {
+    const h = Math.floor(m / 60);
+    const min = Math.round(m % 60);
+    if (min === 0) return h + (h === 1 ? " ora" : " ore");
+    return h + "h" + String(min).padStart(2, "0");
+  };
   let testo =
     "<strong>La traversata dello Stretto costa " + Math.round(dMin) + " minuti.</strong> " +
     "Roma-Reggio Calabria è " + toNum(viaTerra.km).toFixed(0) + " km in " +
     ore(toNum(viaTerra.durata_media_min)) + ", Roma-Messina " +
     toNum(viaNave.km).toFixed(0) + " km in " + ore(toNum(viaNave.durata_media_min)) + ": " +
-    Math.abs(dKm).toFixed(0) + " km in meno e due ore in più, perché il treno sale sulla nave " +
+    // Anche questo si ricava: se un giorno la differenza scendesse a novanta
+    // minuti, il titolo direbbe "90 minuti" e la frase "due ore".
+    Math.abs(dKm).toFixed(0) + " km in meno e " + ore(dMin) + " in più, perché il treno sale sulla nave " +
     "(manovra, imbarco, traversata, sbarco). E si vede sulla velocità:";
 
   // Il confronto va fatto a parita' di lunghezza, altrimenti mente. Rapportate
@@ -2653,6 +3389,11 @@ function initKmMetricSel() {
   const sel = document.getElementById("kmMetricSel");
   if (!sel) return;
   sel.onchange = function() { ensureKmData().then(renderKmRanking); };
+  const selL = document.getElementById("kmLunghezzaSel");
+  if (selL && !selL.dataset.collegato) {
+    selL.dataset.collegato = "1";
+    selL.onchange = function() { ensureKmData().then(renderKmRanking); };
+  }
 }
 
 /* ────────────────── mappa della lentezza della rete ────────────────── */
@@ -2758,8 +3499,7 @@ function renderMappaRete() {
       "ai capolinea e non alle fermate intermedie, quindi la velocità di un " +
       "viaggio si spalma uguale su tutto il percorso; e dove passano molti " +
       "regionali il tratto risulta lento anche su infrastruttura veloce, perché " +
-      "sono loro a fare il numero delle corse. Milano-Piacenza risulta a 54 km/h " +
-      "per questo motivo.";
+      "sono loro a fare il numero delle corse." + esempioRegionali();
   }
 }
 
@@ -2784,7 +3524,10 @@ function avviaMappaRete() {
   const el = document.getElementById("mapRete");
   if (!el || isCardCollapsed(el)) return;
   initMappaRete();
-  ensureReteData().then(function() {
+  // Anche i chilometri, non solo la geometria: l'avvertenza sotto la mappa
+  // chiude con un esempio calcolato su quella tabella, e chi apre la mappa
+  // senza aver mai aperto la classifica per chilometro se lo vedeva sparire.
+  Promise.all([ensureReteData(), ensureKmData()]).then(function() {
     renderMappaRete();
     // Secondo giro dopo che il disegno si e' assestato: se il contenitore ha
     // cambiato dimensione nel frattempo, la vista si riadatta.
@@ -2811,7 +3554,12 @@ function renderFilterBadges() {
   if (f.cat !== "all") badges.push({ label: "Cat: " + f.cat, type: "active" });
   // Month range
   if (f.month_from || f.month_to) {
-    var rangeLabel = "Mese: " + (f.month_from || "...") + " \u2013 " + (f.month_to || "...");
+    // Con un solo estremo scelto il filtro tiene quel mese e basta (vedi
+    // passMonthRange). L'etichetta scriveva "10 - ...", che si legge come "da
+    // ottobre in poi" e prometteva tre mesi dove ne passava uno.
+    var rangeLabel = f.month_from && f.month_to && f.month_from !== f.month_to
+      ? "Mese: " + f.month_from + " \u2013 " + f.month_to
+      : "Mese: " + (f.month_from || f.month_to);
     badges.push({ label: rangeLabel, type: "active" });
   }
 
@@ -2819,13 +3567,11 @@ function renderFilterBadges() {
   var depLabel = "";
   var arrLabel = "";
   if (f.dep !== "all") {
-    var depSel = document.getElementById("depSel");
-    depLabel = depSel ? depSel.options[depSel.selectedIndex].text : f.dep;
+    depLabel = etichettaStazioneSelezionata("depSel", f.dep);
     badges.push({ label: "Partenza: " + depLabel, type: "active", stationFilter: true, kind: "dep" });
   }
   if (f.arr !== "all") {
-    var arrSel = document.getElementById("arrSel");
-    arrLabel = arrSel ? arrSel.options[arrSel.selectedIndex].text : f.arr;
+    arrLabel = etichettaStazioneSelezionata("arrSel", f.arr);
     badges.push({ label: "Arrivo: " + arrLabel, type: "active", stationFilter: true, kind: "arr" });
   }
 
@@ -2975,6 +3721,7 @@ async function loadAll() {
   // non puo' arrivare un file di una build diversa dal manifest appena letto.
   _versioneDati = built;
   setMeta(built ? "Aggiornamento: " + built : "Caricamento...");
+  scriviQuotaScartate();
 
   const files = state.manifest && Array.isArray(state.manifest.gold_files) && state.manifest.gold_files.length
     ? state.manifest.gold_files : safeManifestDefaults().gold_files;
@@ -3061,8 +3808,14 @@ async function loadAll() {
   enrichStationsRefFromFacts();
 
   const capRows = await loadCapoluoghiAnyBase(base);
+  // I capoluoghi passano per la stessa normalizzazione dei nomi stazione, cosi'
+  // che le due parti del confronto in capoluogoKey siano scritte nello stesso
+  // alfabeto: normalizzare un solo lato lasciava fuori i capoluoghi che le
+  // regole toccano.
   state.capoluoghiSet = new Set(
-    capRows.map((r) => normalizeText(r.citta || r.capoluogo || r.nome || r.city || "")).filter(Boolean)
+    capRows
+      .map((r) => normalizeText(normalizeStationName(r.citta || r.capoluogo || r.nome || r.city || "")))
+      .filter(Boolean)
   );
 
   // Enable tap-to-show tooltips on mobile

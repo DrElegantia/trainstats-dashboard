@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Ritardo Treni Italia | Statistiche Puntualit&agrave; Ferroviaria</title>
-  <meta name="description" content="Dashboard interattiva su ritardi, cancellazioni e puntualit&agrave; dei treni in Italia. Dati aggiornati quotidianamente: statistiche per stazione, categoria e tratta. Costo pro capite dei ritardi. A cura di Umberto Bertonelli." />
+  <meta name="description" content="Dashboard interattiva su ritardi, cancellazioni e puntualit&agrave; dei treni in Italia. Dati aggiornati quotidianamente: statistiche per stazione, categoria e tratta. Costo economico stimato dei ritardi. A cura di Umberto Bertonelli." />
   <meta name="author" content="Umberto Bertonelli" />
   <meta name="keywords" content="ritardo treni, ritardo treni oggi, statistiche treni italia, treni in ritardo, cancellazioni treni, puntualit&agrave; treni, ritardo treni regionali, ritardo trenitalia, dashboard treni, costo ritardi ferroviari" />
   <link rel="canonical" href="https://www.umbertobertonelli.it/ritardo-treni/" />
@@ -78,7 +78,7 @@
           "Percentuale treni in ritardo",
           "Treni cancellati",
           "Treni soppressi",
-          "Costo pro capite ritardi"
+          "Costo economico stimato dei ritardi"
         ]
       }
     ]
@@ -184,11 +184,11 @@
       <div class="kpiValue" id="kpiLateMin"></div>
     </div>
     <div class="kpi">
-      <div class="kpiLabel">Cancellati</div>
+      <div class="kpiLabel">Cancellati, totali e parziali</div>
       <div class="kpiValue" id="kpiCancelled"></div>
     </div>
     <div class="kpi">
-      <div class="kpiLabel">Soppressi</div>
+      <div class="kpiLabel">di cui soppressi</div>
       <div class="kpiValue" id="kpiSuppressed"></div>
     </div>
   </section>
@@ -200,9 +200,9 @@
         <button class="card-toggle" aria-label="Espandi/Collassa">&#9660;</button>
       </div>
       <div class="card-body">
-        <div class="card-desc">Percentuale mensile di treni in ritardo, cancellati o soppressi sul totale delle corse osservate.</div>
+        <div class="card-desc">Percentuale mensile di corse andate male: quelle arrivate in ritardo, più quelle cancellate del tutto o in parte, sul totale delle corse osservate. Una corsa conta una volta sola, anche quando è insieme in ritardo e cancellata in parte.</div>
         <div class="filter-badges" id="badgesDelayIndex"></div>
-        <div class="note">(In ritardo + Cancellati + Soppressi) / Corse osservate &times; 100</div>
+        <div class="note">(In ritardo fra le corse effettuate + Cancellati, totali e parziali) / Corse osservate &times; 100</div>
         <div id="chartDelayIndex" class="chart"></div>
       </div>
     </div>
@@ -212,9 +212,10 @@
         <button class="card-toggle" aria-label="Espandi/Collassa">&#9660;</button>
       </div>
       <div class="card-body">
-        <div class="card-desc">Andamento mensile del numero di corse suddivise per stato: effettuate, in ritardo, cancellate e soppresse.</div>
+        <div class="card-desc">Andamento mensile della metrica scelta qui sopra, una linea sola.</div>
         <div class="filter-badges" id="badgesSeries"></div>
         <div id="chartMonthly" class="chart"></div>
+        <div class="note" id="notaMeseParziale"></div>
       </div>
     </div>
   </section>
@@ -226,11 +227,11 @@
         <button class="card-toggle" aria-label="Espandi/Collassa">&#9654;</button>
       </div>
       <div class="card-body">
-        <div class="card-desc">Distribuzione dei treni per scostamento dall'orario all'arrivo (minuti). I valori negativi sono arrivi in anticipo, non ritardi negativi: valgono pochi minuti e corrispondono al margine di recupero previsto dall'orario. Gli anticipi oltre i 5 minuti non sono arrivi reali ma errori della sorgente, e restano esclusi dal calcolo: sono il 3,5% delle corse effettuate. L'ultima barra raccoglie le corse cancellate e soppresse, che non hanno uno scostamento perché non sono partite.</div>
+        <div class="card-desc">Distribuzione dei treni per scostamento dall'orario all'arrivo (minuti). I valori negativi sono arrivi in anticipo, non ritardi negativi, e sono tanti: quattro corse su dieci arrivano prima dell'orario, mentre alla partenza succede a due su diecimila. È il margine di recupero che l'orario incorpora, e cresce lungo il percorso: alle fermate intermedie l'anticipo riguarda il 23% degli arrivi, al capolinea il 40%. Oltre i 5 minuti l'anticipo resta fuori dal calcolo insieme alle misure mancanti, in tutto il <span id="pctMisureScartate">&mdash;</span> delle corse arrivate a destinazione. Le ultime due barre non sono scostamenti: le corse cancellate in parte sono partite senza arrivare dove dovevano, le non effettuate non sono partite affatto.</div>
         <div class="filter-badges" id="badgesHist"></div>
         <div id="chartHist" class="chart"></div>
         <div id="costIndicator" class="cost-indicator" style="display:none;">
-          <span class="cost-label">Costo stimato pro capite dei ritardi (&gt;5 min) <span class="info-tip" data-tooltip="Stima basata sul PIL pro capite italiano&#10;(~&euro;37.000/anno = &euro;0,0704/minuto).&#10;Conta solo i minuti di ritardo&#10;dei treni con ritardo &gt; 5 minuti.">&#9432;</span></span>
+          <span class="cost-label">Costo stimato dei ritardi (&gt;5 min) <span class="info-tip" data-tooltip="Minuti di ritardo dei treni oltre i 5 minuti,&#10;valorizzati al PIL pro capite italiano&#10;(~&euro;37.000/anno = &euro;0,0704/minuto).&#10;Vale un passeggero per treno: quanti ne&#10;viaggiassero davvero non &egrave; nel dato&#10;di partenza, e non si stima.">&#9432;</span></span>
           <span class="cost-value" id="costValue"></span>
         </div>
       </div>
@@ -317,6 +318,13 @@
             <option value="ritardo_per_100km">Minuti di ritardo / 100 km</option>
             <option value="km_h_programmati">Velocit&agrave; commerciale</option>
           </select>
+          <select id="kmLunghezzaSel" class="card-select" title="Confronta solo tratte di lunghezza simile">
+            <option value="all">Tutte le lunghezze</option>
+            <option value="0-60">fino a 60 km</option>
+            <option value="60-200">60 - 200 km</option>
+            <option value="200-500">200 - 500 km</option>
+            <option value="500-99999">oltre 500 km</option>
+          </select>
           <button class="card-toggle" aria-label="Espandi/Collassa">&#9660;</button>
         </div>
       </div>
@@ -338,6 +346,6 @@
 
   <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="assets/app.js?v=241138cc8b"></script>
+  <script src="assets/app.js?v=bd0c904551"></script>
 </body>
 </html>
