@@ -34,13 +34,28 @@ permissions:
 
 concurrency:
   group: pages
-  # GitHub Pages accetta un deployment alla volta per repository: con due push
-  # a pochi minuti di distanza il secondo run partiva mentre il primo stava
-  # ancora pubblicando e moriva con "due to in progress deployment", lasciando
-  # un fallimento rosso che sembrava un guasto della build. Qui conta solo il
-  # contenuto piu' recente, quindi il run nuovo annulla quello vecchio invece di
-  # accodarsi e scontrarsi con lui.
-  cancel-in-progress: true
+  # GitHub Pages accetta un deployment alla volta per repository: con due push a
+  # pochi minuti di distanza il secondo run parte mentre il primo sta ancora
+  # pubblicando e muore con "due to in progress deployment".
+  #
+  # La prima risposta era `cancel-in-progress: true`, per far vincere il
+  # contenuto piu' recente. Non funziona, e il 30 luglio 2026 ha lasciato il sito
+  # di test peggio del fallimento stesso: annullare il run vecchio non annulla il
+  # deployment che quel run ha GIA' consegnato alle API di Pages, quindi il run
+  # nuovo si scontrava comunque. Test e' rimasto con l'app.js nuovo, che chiede
+  # copertura_categoria.csv, e il CSV a 404: la dashboard tornava a disegnare le
+  # percentuali delle categorie presenti in una giornata sola.
+  #
+  # Accodarsi invece funziona: il run nuovo attende, e il vecchio finisce solo
+  # quando il suo deployment e' andato live. Costa qualche minuto per ogni push
+  # in piu' e non lascia mai il sito a meta'.
+  #
+  # Lo stesso gruppo lo usa daily.yml, che gia' si accoda: due politiche opposte
+  # sullo stesso gruppo erano una trappola in attesa. Non e' mai scattata solo
+  # perche' i push fatti con GITHUB_TOKEN non innescano workflow, quindi il
+  # commit notturno non ha mai generato un Deploy Site capace di annullare la
+  # pipeline che lo aveva scritto.
+  cancel-in-progress: false
 
 jobs:
   deploy:
