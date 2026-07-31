@@ -78,9 +78,23 @@ def run(start: date, end: date) -> None:
         ]
     )
 
-    # 3. Costruisci aggregazioni gold
     months = month_keys_between(start, end)
     ensure_silver_available(months)
+
+    # 2-bis. Completa le categorie che la sorgente lascia vuote, leggendo come
+    # etichetta lo stesso numero di treno altrove.
+    #
+    # Deve stare QUI, fra il silver e il gold, e non piu' avanti: scrive il
+    # silver, e se girasse dopo build_gold il gold resterebbe quello di prima,
+    # cioe' il completamento non arriverebbe mai a nessuna tabella. Ci era
+    # finito dopo alla prima stesura.
+    #
+    # Sul mese appena riscritto, perche' il passo 2 rigenera dal bronze il silver
+    # del mese in corso: senza, ogni notte ricomparirebbero le corse senza
+    # categoria gia' completate, e il difetto tornerebbe un mese alla volta.
+    call([sys.executable, "-m", "scripts.completa_categoria", "--months", *months])
+
+    # 3. Costruisci aggregazioni gold
     call([sys.executable, "-m", "scripts.build_gold", "--months", *months])
 
     # 4. Costruisci dimensione stazioni

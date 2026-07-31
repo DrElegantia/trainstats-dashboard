@@ -98,14 +98,22 @@ def _scegli(per_mese, globale, numero: str, mese: str):
     return None, None
 
 
-def main(dry_run: bool = False) -> None:
+def main(dry_run: bool = False, mesi: list = None) -> None:
     percorsi = sorted(p for pat in SORGENTI for p in glob.glob(pat))
     if not percorsi:
         print("nessun silver da completare")
         return
 
+    # Le etichette note si leggono SEMPRE da tutto lo storico, anche quando si
+    # riscrive un mese solo: e' proprio il resto della storia che dice come si
+    # chiama quel treno. Con --months cambia solo cosa viene riscritto.
     print(f"leggo le etichette note da {len(percorsi)} file...")
     per_mese, globale = _chiavi(percorsi)
+
+    if mesi:
+        volute = set(mesi)
+        percorsi = [p for p in percorsi if os.path.basename(p)[:6] in volute]
+        print(f"riscrivo {len(percorsi)} file dei mesi {sorted(volute)}")
 
     tot_vuote = riempite = 0
     da_mese = da_storico = 0
@@ -124,19 +132,24 @@ def main(dry_run: bool = False) -> None:
         num = d["numero_treno"].astype(str).str.strip()
         mese = d["data_riferimento"].astype(str).str.slice(0, 7)
         nuovo = cat.copy()
+        # Il conteggio va tenuto per file, non cumulativo: con il totale, dopo il
+        # primo riempimento ogni file successivo veniva riscritto anche senza una
+        # sola modifica, e un parquet ricodificato e' un file cambiato per git.
+        qui = 0
         for i in d.index[vuote]:
             scelta, fonte = _scegli(per_mese, globale, num[i], mese[i])
             if scelta is None:
                 continue
             nuovo[i] = scelta
-            riempite += 1
+            qui += 1
             per_categoria[scelta] += 1
             if fonte == "mese":
                 da_mese += 1
             else:
                 da_storico += 1
+        riempite += qui
 
-        if not dry_run and riempite:
+        if not dry_run and qui:
             d["categoria"] = nuovo.astype("category")
             d.to_parquet(p, index=False, compression="zstd")
 
@@ -153,5 +166,6 @@ def main(dry_run: bool = False) -> None:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--months", nargs="*", help="YYYYMM da riscrivere; le etichette si leggono comunque da tutto lo storico")
     a = ap.parse_args()
-    main(a.dry_run)
+    main(a.dry_run, a.months)

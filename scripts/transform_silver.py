@@ -168,6 +168,19 @@ def transform(cfg: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
         path = str(df.get("_bronze_path", pd.Series([""])).iloc[0]) if len(df) else ""
         raise RuntimeError(f"silver missing required columns after rename: {missing} (file={path})")
 
+    # La categoria e' testo, e il vuoto e' la stringa vuota, mai un nullo.
+    #
+    # Nel formato legacy la costruiamo noi e lo e' gia'; in quello nuovo arriva
+    # da una colonna CSV, dove la cella vuota diventa NaN. Venti righe su tutto
+    # lo storico, e bastavano: il NaN sopravvive al raggruppamento del gold e
+    # diventa un gruppo a se', che l'invariante sulle categorie spurie trova. E'
+    # cosi' che la pipeline notturna del 31 luglio 2026 e' fallita su entrambi i
+    # repo con "trovate ['None']", fermandosi PRIMA di committare: il
+    # comportamento voluto, non ha pubblicato dati sbagliati.
+    if "categoria" in df.columns:
+        df["categoria"] = (df["categoria"].fillna("").astype(str)
+                           .replace({"nan": "", "None": "", "<NA>": ""}))
+
     for c in _STATUS_TEXT_COLUMNS:
         if c in df.columns:
             df[c] = df[c].fillna("").astype(str).replace("nan", "")
