@@ -66,12 +66,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -86,13 +86,19 @@ jobs:
         run: python -m scripts.build_site
 
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs/
+          # Dalla v4 questa azione ESCLUDE i file nascosti, e docs/.nojekyll e'
+          # un file nascosto. Senza, Pages riaccende Jekyll sul sito: la build
+          # cambia, e tutto cio' che comincia con underscore sparisce. Oggi in
+          # docs/ non c'e' nulla del genere, ma il .nojekyll sta li' apposta e
+          # toglierlo per una svista di aggiornamento sarebbe un guasto muto.
+          include-hidden-files: true
 
       - name: Deploy to GitHub Pages
         id: deploy_pages
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

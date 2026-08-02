@@ -34,17 +34,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           lfs: true
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Cache pip
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
@@ -165,15 +165,18 @@ jobs:
           fi
 
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           # Uploads the full docs/ directory (index.html + assets + freshly
           # generated docs/data/ CSVs). Large CSVs are never committed to git.
           path: docs/
+          # Dalla v4 questa azione ESCLUDE i file nascosti, e docs/.nojekyll e'
+          # un file nascosto. Senza, Pages riaccende Jekyll sul sito.
+          include-hidden-files: true
 
       - name: Deploy to GitHub Pages
         id: deploy_pages
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
