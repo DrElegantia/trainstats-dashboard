@@ -134,12 +134,12 @@ manifest, evitando di mantenerne una copia statica nell'HTML.
 I parametri della pipeline sono definiti in `config/pipeline.yml` e possono
 essere modificati senza intervenire sul codice:
 
-- **Soglia puntualità** — minuti entro cui un treno è considerato "in orario"
-- **Classi istogramma** — bucket per la distribuzione del ritardo arrivo
-- **Regole stato corsa** — pattern regex per classificare: effettuato, cancellato, soppresso, parzialmente cancellato. I nomi in `text_fields` sono quelli **canonici** (minuscoli), non le intestazioni della sorgente
-- **`delay_validity`** — finestra oltre la quale la misura di ritardo è considerata non attendibile
-- **`delay_states`** — stati corsa su cui ha senso calcolare un ritardo
-- **Soglia minima numerosità** — per classifiche stazioni nella dashboard
+- **Soglia puntualità**: minuti entro cui un treno è considerato "in orario"
+- **Classi istogramma**: bucket per la distribuzione del ritardo arrivo
+- **Regole stato corsa**: pattern regex per classificare una corsa come effettuata, cancellata, soppressa o parzialmente cancellata. I nomi in `text_fields` sono quelli **canonici** (minuscoli), non le intestazioni della sorgente
+- **`delay_validity`**: finestra oltre la quale la misura di ritardo è considerata non attendibile
+- **`delay_states`**: stati corsa su cui ha senso calcolare un ritardo
+- **Soglia minima numerosità**: per classifiche stazioni nella dashboard
 
 ## Esecuzione locale
 
@@ -197,9 +197,9 @@ Per il backfill manuale si usa `workflow_dispatch` con parametri `start_date` e 
 
 | Problema | Cosa controllare |
 |----------|-----------------|
-| Header mismatch | `config/schema_expected.json` — valuta modalità `prefix` se la sorgente aggiunge colonne |
-| Troppi missing datetime | Formato colonne orario nella sorgente — aggiorna `parse_dt_it` in `scripts/utils.py` |
-| Mappa vuota | `stations/stations.csv` — aggiungi coordinate mancanti |
+| Header mismatch | `config/schema_expected.json`: valuta modalità `prefix` se la sorgente aggiunge colonne |
+| Troppi missing datetime | Formato colonne orario nella sorgente: aggiorna `parse_dt_it` in `scripts/utils.py` |
+| Mappa vuota | `stations/stations.csv`: aggiungi coordinate mancanti |
 | Dashboard non carica | Verifica che `docs/data/` contenga i CSV gold e `manifest.json` |
 
 ## Crediti
