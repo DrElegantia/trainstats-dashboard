@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deploy_pages.outputs.page_url }}
+      url: ${{ steps.deploy_pages.outputs.page_url || steps.deploy_pages_retry.outputs.page_url }}
 
     steps:
       - name: Checkout repository
@@ -177,6 +177,20 @@ jobs:
           # un file nascosto. Senza, Pages riaccende Jekyll sul sito.
           include-hidden-files: true
 
+      # Il 10/11/2026 Pages e' rimasto in "syncing_files" per tutto il timeout
+      # (pipeline e upload ok, artifact da 228 MB come gli altri giorni): un
+      # blocco lato GitHub che faceva perdere l'aggiornamento del giorno. Il
+      # primo tentativo puo' fallire, il secondo riusa lo stesso artifact.
       - name: Deploy to GitHub Pages
         id: deploy_pages
         uses: actions/deploy-pages@v5
+        continue-on-error: true
+        with:
+          timeout: 1200000
+
+      - name: Deploy to GitHub Pages (secondo tentativo)
+        id: deploy_pages_retry
+        if: steps.deploy_pages.outcome == 'failure'
+        uses: actions/deploy-pages@v5
+        with:
+          timeout: 1200000
